@@ -1480,13 +1480,37 @@ class UnpackPlanTest < Minitest::Test
     Rakpak::Unpack.new(archive: "#{@dir}/#{name}", dest: dest)
   end
 
+  # Tools memoizes the flavor it detects; pin it for one block, then put back
+  # whatever the real tar was.
+  def with_tar_flavor(flavor)
+    had = Rakpak::Tools.instance_variable_defined?(:@tar_flavor)
+    real = Rakpak::Tools.instance_variable_get(:@tar_flavor)
+    Rakpak::Tools.instance_variable_set(:@tar_flavor, flavor)
+    yield
+  ensure
+    if had then Rakpak::Tools.instance_variable_set(:@tar_flavor, real)
+    else Rakpak::Tools.remove_instance_variable(:@tar_flavor)
+    end
+  end
+
   # GNU tar runs "<program> -d" itself to read an archive, so the program
   # must be the bare binary. brotli refuses a second command flag.
-  def test_tar_is_left_to_add_its_own_decompress_flag
-    _, argv, = unpack("a.tar.br").steps.first
-    assert_includes argv, "--use-compress-program"
-    assert_includes argv, "brotli"
-    refute(argv.any? { |a| a.include?("-d") }, argv.inspect)
+  def test_gnu_tar_is_left_to_add_its_own_decompress_flag
+    with_tar_flavor(:gnu) do
+      _, argv, = unpack("a.tar.br").steps.first
+      assert_includes argv, "--use-compress-program"
+      assert_includes argv, "brotli"
+      refute(argv.any? { |a| a.include?("-d") }, argv.inspect)
+    end
+  end
+
+  # bsdtar runs the program exactly as given, so without -d the compressor
+  # would compress the archive a second time.
+  def test_bsdtar_is_told_to_decompress
+    with_tar_flavor(:bsd) do
+      _, argv, = unpack("a.tar.br").steps.first
+      assert_equal "brotli -d", argv[argv.index("--use-compress-program") + 1]
+    end
   end
 
   def test_a_tarball_is_extracted_with_the_codec_as_a_compress_program
@@ -1494,7 +1518,7 @@ class UnpackPlanTest < Minitest::Test
     label, argv, verbose, stdout = u.steps.first
     assert_equal "tar", label
     assert_includes argv, "--use-compress-program"
-    assert_includes argv, "lz4"
+    assert_match(/\Alz4( -d)?\z/, argv[argv.index("--use-compress-program") + 1])
     assert_includes argv, "#{@dir}/a.tar.lz4"
     assert_equal ["-C", "#{@dir}/out"], argv.last(2)
     assert verbose, "tar -v drives the progress readout"

@@ -150,10 +150,11 @@ module Rakpak
 
     def tar_argv
       argv = ["tar", "-x", "-v"]
-      # Reading an archive, tar runs the program with -d appended, so this is
-      # the bare binary. Adding our own -d makes brotli refuse the command as
-      # already set; the other five ignore the repeat.
-      argv += ["--use-compress-program", @shape.bin] if @shape.bin
+      # Reading an archive, GNU tar runs the program with -d appended, so it
+      # gets the bare binary; adding our own -d makes brotli refuse the
+      # command as already set. bsdtar runs the string as given, so it needs
+      # the -d spelled out or the compressor compresses the stream again.
+      argv += ["--use-compress-program", Tools.tar_flavor == :bsd ? "#{@shape.bin} -d" : @shape.bin] if @shape.bin
       argv + ["-f", @archive, "-C", @dest]
     end
 
