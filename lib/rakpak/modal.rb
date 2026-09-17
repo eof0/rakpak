@@ -4,8 +4,6 @@ require_relative "theme"
 require_relative "text"
 
 module Rakpak
-  # Base class for the centred overlay panels. Subclasses fill the body;
-  # geometry, frame, title and footer are handled here.
   class Modal
     attr_reader :result
 
@@ -15,7 +13,6 @@ module Rakpak
       @result = nil
     end
 
-    # Desired [width, height] given the screen.
     def dims(screen)
       [[screen.w - 6, 72].min, [screen.h - 4, 20].min]
     end
@@ -41,11 +38,9 @@ module Rakpak
 
     def body(screen, x, y, w, h); end
 
-    # :done, :cancel or nil
     def handle(_key) = nil
   end
 
-  # A vertical list of choices, some of which may be unavailable.
   class SelectModal < Modal
     Item = Struct.new(:label, :value, :blurb, :enabled, :why, keyword_init: true)
 
@@ -122,7 +117,6 @@ module Rakpak
     end
   end
 
-  # A form of mixed rows: cycling choices, numeric ranges and toggles.
   class FormModal < Modal
     Row = Struct.new(:kind, :label, :hint, :get, :set, :values, keyword_init: true)
 
@@ -214,7 +208,6 @@ module Rakpak
       end
     end
 
-    # The reason the current settings cannot be run, or nil.
     def unusable
       @rows.each do |row|
         next unless row.kind == :choice
@@ -269,8 +262,6 @@ module Rakpak
     end
   end
 
-  # Single-line text field with the editing keys people expect. `validate`
-  # is given the trimmed text and returns a reason to refuse it, or nil.
   class InputModal < Modal
     def initialize(title:, value: "", hint: "", footer: "enter accept · esc back", validate: nil)
       super(title: title, footer: footer)
@@ -294,11 +285,10 @@ module Rakpak
       field(screen, x, y + (@hint.empty? ? 0 : 2), w, active: true)
     end
 
-    # The text box on its own, for embedding in another panel.
     def field(screen, x, row, w, active: true)
       screen.fill(x, row, w, 1, " ", Theme::SEL_BG)
       width = w - 2
-      # Scroll so the cursor is visible, counting columns, not characters.
+      # Scroll by display columns, not characters.
       off = 0
       off += 1 while off < @cur && Text.width(@buf[off...@cur]) >= width
       shown = +""
@@ -359,8 +349,6 @@ module Rakpak
     end
   end
 
-  # Where the archive goes: two ready-made folders and a field for any
-  # other. Typing anything moves to the field; 1, 2 and 3 pick directly.
   class WhereModal < Modal
     attr_reader :index
 
@@ -417,8 +405,6 @@ module Rakpak
       nil
     end
 
-    # Once the field is active, j, k and digits are text like anything
-    # else; arrows and tab still move between the choices.
     def field_key(key)
       @index = 2
       @field.handle(key)
@@ -444,9 +430,7 @@ module Rakpak
     end
   end
 
-  # Read-only panel: the exact commands, warnings, and a go/no-go. Only
-  # enter runs it: a single letter is too easy to hit while meaning
-  # something else, and b in particular reads as "back".
+  # Only enter runs it: a single letter (b reads as "back") is too easy to hit by mistake.
   class ConfirmModal < Modal
     def initialize(title:, lines:, warnings: [], errors: [], footer: nil)
       super(title: title,
@@ -462,8 +446,7 @@ module Rakpak
       [w, [h, screen.h - 2].min]
     end
 
-    # Commands are wrapped rather than clipped: the whole point of this
-    # panel is that you can read exactly what will run.
+    # Wrap, don't clip: the user must see exactly what will run.
     def laid_out(w)
       @lines.flat_map do |style, text|
         if style == :cmd
@@ -514,8 +497,6 @@ module Rakpak
     end
   end
 
-  # Transient notice panel. Scrolls when the content is taller than the
-  # terminal, which the key list usually is on a short screen.
   class MessageModal < Modal
     def initialize(title:, lines:, style: Theme::ERR)
       super(title: title, footer: "any key to dismiss")

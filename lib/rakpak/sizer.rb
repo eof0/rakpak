@@ -1,12 +1,10 @@
 # frozen_string_literal: true
 
 module Rakpak
-  # Walks tagged directories on a worker thread so the UI can show a real
-  # byte total and file count without ever blocking on a huge tree.
   class Sizer
     Result = Struct.new(:bytes, :files, :partial)
 
-    BUDGET = 4.0 # seconds per path before we report a partial figure
+    BUDGET = 4.0 # seconds per path before reporting a partial figure
 
     def initialize
       @cache = {}
@@ -40,7 +38,6 @@ module Rakpak
       Result.new(bytes, files, known.any?(&:nil?) || known.compact.any?(&:partial))
     end
 
-    # Drops the figure, and any measurement in flight for it.
     def forget(path)
       @lock.synchronize do
         @cache.delete(path)
@@ -60,8 +57,7 @@ module Rakpak
     def work(path, token)
       res = measure(path)
       @lock.synchronize do
-        # Forgotten, invalidated, or re-requested while we were walking:
-        # only the walk that the current request started may answer it.
+        # Only the walk the current request started may answer it.
         next unless @pending[path].equal?(token)
 
         @pending.delete(path)

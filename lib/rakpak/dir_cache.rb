@@ -3,8 +3,6 @@
 require_relative "entry"
 
 module Rakpak
-  # Directory listings, memoised per (path, show_hidden). Cheap enough that
-  # the parent/preview panes can ask on every keystroke.
   class DirCache
     MAX_ENTRIES = 20_000
 
@@ -31,7 +29,7 @@ module Rakpak
       names.reject! { |n| n.start_with?(".") } unless hidden
       names = names.first(MAX_ENTRIES)
       names.map { |n| Entry.new(File.join(path, n), n) }.sort_by(&:sort_key)
-    rescue StandardError # EACCES, ENOENT, ENOTDIR, ELOOP and the rest
+    rescue StandardError
       nil
     end
   end

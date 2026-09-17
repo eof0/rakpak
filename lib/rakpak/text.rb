@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 module Rakpak
-  # Grapheme-aware width math. Just enough Unicode to keep columns honest.
   module Text
     WIDE = [
       0x1100..0x115F, 0x2E80..0x303E, 0x3041..0x33FF, 0x3400..0x4DBF,
@@ -14,12 +13,10 @@ module Rakpak
 
     module_function
 
-    # Display width of a single grapheme cluster.
     def gw(cluster)
       cp = cluster.ord
-      return 1 if cp >= 0x20 && cp < 0x7F # the common case, checked first
-      # C0, DEL and the C1 controls: a UTF-8 terminal executes U+009B as
-      # CSI, so these must never reach the frame.
+      return 1 if cp >= 0x20 && cp < 0x7F
+      # C0, DEL and C1: a UTF-8 terminal executes U+009B as CSI.
       return 0 if cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)
       return 0 if ZERO.any? { |r| r.cover?(cp) }
       return 2 if WIDE.any? { |r| r.cover?(cp) }
@@ -35,7 +32,6 @@ module Rakpak
       w
     end
 
-    # Truncate to `max` columns, appending an ellipsis when something was cut.
     def fit(str, max)
       return "" if max <= 0
       return str if width(str) <= max
@@ -52,7 +48,6 @@ module Rakpak
       out << "…"
     end
 
-    # Keep the tail of a path visible instead of the head.
     def fit_left(str, max)
       return "" if max <= 0
       return str if width(str) <= max
@@ -75,7 +70,6 @@ module Rakpak
       w >= max ? str : str + (" " * (max - w))
     end
 
-    # Greedy wrap on spaces, with a hanging indent for continuations.
     def wrap(str, max, indent = 0)
       return [str] if max <= indent + 4 || width(str) <= max
 
@@ -84,7 +78,6 @@ module Rakpak
       out = []
       line = +""
       words = str[lead.length..].to_s.split(" ").flat_map do |word|
-        # A path with no spaces can still be wider than the panel; break it.
         limit = max - indent
         next word if width(word) <= limit || limit < 8
 
@@ -103,7 +96,6 @@ module Rakpak
       out
     end
 
-    # /home/me/x → ~/x. Only a real prefix counts: /home/me2 is left alone.
     def tilde(path)
       home = Dir.home
       return path if home.nil? || home.empty? || home == "/"
@@ -112,8 +104,7 @@ module Rakpak
       path.start_with?("#{home}/") ? "~#{path[home.length..]}" : path
     end
 
-    # For text that goes to the terminal without passing through Screen:
-    # control and C1 bytes could otherwise be executed as escape sequences.
+    # Control and C1 bytes could be executed as escape sequences.
     def plain(str)
       str.to_s.dup.force_encoding(Encoding::UTF_8).scrub("?").gsub(/[\u0000-\u001f\u007f-\u009f]/, "?")
     end

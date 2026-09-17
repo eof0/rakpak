@@ -5,22 +5,11 @@ require_relative "formats"
 require_relative "plan"
 
 module Rakpak
-  # Turns one archive plus a destination into a command that unpacks it.
-  # Wears the same face as Plan, so Job runs it without knowing which way
-  # round the work goes.
-  #
-  # Three shapes, mirroring the ones Plan writes:
-  #   :tar     tar, decompressing through the codec if there is one
-  #   :zip     unzip
-  #   :single  one compressed file back to one plain file
   class Unpack
-    # An archive shape recognised by extension. `codec` names the TAR_CODECS
-    # entry doing the compression, so the binary probing already done for
-    # packing decides whether this can be read back.
+    # `codec` is a TAR_CODECS id, so packing's binary probing decides readability.
     Shape = Struct.new(:ext, :kind, :codec, keyword_init: true) do
       def tool = kind == :zip ? "unzip" : "tar"
 
-      # The compressor's binary, when one is involved.
       def bin = codec && Rakpak.tar_codec(codec)&.bin
     end
 
@@ -47,7 +36,6 @@ module Rakpak
       Shape.new(ext: ".br",      kind: :single, codec: :brotli)
     ].sort_by { |s| -s.ext.length }.freeze
 
-    # nil when the name carries no extension we know how to open.
     def self.format(path)
       name = File.basename(path.to_s).downcase
       SHAPES.find { |s| name.end_with?(s.ext) && name.length > s.ext.length }
@@ -55,9 +43,7 @@ module Rakpak
 
     def self.archive?(path) = !format(path).nil?
 
-    # "notes.tar.gz" -> "notes"; the whole archive extension goes. A name that
-    # leaves nothing, "." or ".." behind would resolve to the destination's
-    # parent once joined, so those keep the whole basename instead.
+    # A name reducing to "", "." or ".." would resolve to the parent, so keep the whole basename.
     def self.strip_ext(path)
       name = File.basename(path.to_s)
       shape = format(path)
@@ -65,13 +51,10 @@ module Rakpak
       ["", ".", ".."].include?(stripped) ? name : stripped
     end
 
-    # The folder to make for the contents, or nil when the archive holds a
-    # single file that should land beside you.
     def self.default_subdir(path)
       format(path)&.kind == :single ? nil : strip_ext(path)
     end
 
-    # What a lone compressed file decompresses back into.
     def self.member_name(path) = strip_ext(path)
 
     attr_reader :archive, :shape
@@ -86,22 +69,17 @@ module Rakpak
     def kind = @shape&.kind
     def single? = kind == :single
 
-    # Job chdirs here, so it has to exist by the time the first step runs.
+    # Job chdirs here, so it must exist before the first step runs.
     def base = @dest
 
-    # A tarball or zip pours its members into the folder; a lone compressed
-    # file has one real output, and Job may replace that.
     def outputs = [single? ? File.join(@dest, Unpack.member_name(@archive)) : @dest]
     def output = outputs.first
     def clobbers_output? = single?
 
-    # The decompressor's output is opened for writing before it has read a
-    # single byte of the archive, so it cannot be aimed at the file it is
-    # meant to replace. It writes here and is renamed over the top on success.
+    # Output is opened before the archive is read, so write here and rename over on success.
     def scratch = File.join(@dest, ".#{Unpack.member_name(@archive)}.part")
 
     def prepare
-      # Remember what we make, so a failure can leave the tree as it was.
       @made = []
       dir = @dest
       until File.directory?(dir) || dir == "/"
@@ -111,13 +89,11 @@ module Rakpak
       FileUtils.mkdir_p(@dest)
     end
 
-    # Every step succeeded, so the recovered file may take its real name.
     def commit
       File.rename(scratch, output) if single? && File.exist?(scratch)
     end
 
-    # Folders we created and never filled are ours to take back; anything that
-    # was already on disk, or anything the run managed to write, stays.
+    # Remove only folders we created that stayed empty.
     def rollback
       (@made || []).each do |dir|
         Dir.rmdir(dir) if File.directory?(dir) && Dir.empty?(dir)
@@ -126,14 +102,11 @@ module Rakpak
       end
     end
 
-    # Counting an archive's members means decompressing the whole thing
-    # first, which is most of the work. The job counts up as it goes instead.
+    # Counting members would mean decompressing the whole archive first.
     def total_members(_sizer) = nil
 
     def gerund = "unpacking"
 
-    # A recovered lone file can be weighed. A folder of members has no useful
-    # size of its own, so it reports what happened instead.
     def outcome
       return "#{File.basename(output)} #{Text.bytes(file_size(output))}" if single?
 
@@ -150,18 +123,13 @@ module Rakpak
 
     def tar_argv
       argv = ["tar", "-x", "-v"]
-      # Reading an archive, GNU tar runs the program with -d appended, so it
-      # gets the bare binary; adding our own -d makes brotli refuse the
-      # command as already set. bsdtar runs the string as given, so it needs
-      # the -d spelled out or the compressor compresses the stream again.
+      # GNU tar appends -d when reading (brotli refuses a repeated -d); bsdtar runs the string as given.
       argv += ["--use-compress-program", Tools.tar_flavor == :bsd ? "#{@shape.bin} -d" : @shape.bin] if @shape.bin
       argv + ["-f", @archive, "-C", @dest]
     end
 
     def zip_argv = ["unzip", "-o", @archive, "-d", @dest]
 
-    # The compressor reading the archive and writing the plain file to
-    # stdout, which Job points at the output path.
     def single_argv = [@shape.bin, "-dc", @archive]
 
     # [label, argv, expects_verbose_output, stdout_path]
@@ -183,8 +151,6 @@ module Rakpak
     # GNU tar and bsdtar can hand the stream to a compressor; busybox cannot.
     def tar_pipes? = Tools.tar_pipes?
 
-    # Every tool this run needs, so a half-installed machine is caught on
-    # the confirm screen rather than partway through the extraction.
     def tools = [@shape&.kind == :single ? nil : @shape&.tool, @shape&.bin].compact
 
     def problems
@@ -201,8 +167,7 @@ module Rakpak
       end
       # mkdir_p would raise EEXIST partway through the run; say it up front.
       errs << "not a folder: #{@dest}" if File.exist?(@dest) && !File.directory?(@dest)
-      # A folder can be writable and still refuse to be listed, which tar
-      # needs to do to avoid clobbering, and which warnings needs to read.
+      # tar needs to list the folder to avoid clobbering.
       if File.directory?(@dest) && !File.readable?(@dest)
         errs << "destination is not readable: #{@dest}"
       end
@@ -211,8 +176,6 @@ module Rakpak
       errs.uniq
     end
 
-    # Nothing is created until the job runs, so writability is a question
-    # about the nearest folder that already exists.
     def existing_parent(dir)
       dir = File.dirname(dir) until File.directory?(dir) || dir == "/"
       dir
@@ -228,8 +191,7 @@ module Rakpak
       warn
     end
 
-    # An unlistable folder is reported by problems; there is nothing to warn
-    # about and this must not raise, since the confirm screen draws it.
+    # Must not raise: the confirm screen calls this while drawing.
     def empty_dir?(dir)
       Dir.children(dir).empty?
     rescue StandardError

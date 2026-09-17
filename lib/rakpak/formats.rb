@@ -1,9 +1,6 @@
 # frozen_string_literal: true
 
 module Rakpak
-  # What this machine can actually do. Nothing here is assumed; every codec
-  # is probed against PATH so the UI can grey out what is missing instead of
-  # failing halfway through a job.
   module Tools
     module_function
 
@@ -27,8 +24,7 @@ module Rakpak
       @zip_bz2 = false
     end
 
-    # GNU tar, bsdtar (macOS) and busybox tar disagree about flags. Detect
-    # once so the UI only offers switches this tar actually understands.
+    # GNU tar, bsdtar (macOS) and busybox tar disagree about flags.
     def tar_flavor
       return @tar_flavor if defined?(@tar_flavor)
 
@@ -54,7 +50,6 @@ module Rakpak
 
   end
 
-  # A tar compression backend.
   Codec = Struct.new(:id, :label, :ext, :bin, :levels, :default, :threads, :blurb,
                      :level_opt, keyword_init: true) do
     def available? = bin.nil? || Tools.available?(bin)
@@ -62,10 +57,8 @@ module Rakpak
     def why_not = available? ? nil : "#{bin} not installed"
     def container? = false
 
-    # ".tar.gz" for a tarball, ".gz" when compressing a lone file.
     def single_ext = ext.delete_prefix(".tar")
 
-    # The compressor reading a named file and writing to stdout.
     def argv(level)
       return nil if bin.nil?
 
@@ -76,8 +69,7 @@ module Rakpak
       parts
     end
 
-    # tar's --use-compress-program string; tar splits it on spaces itself.
-    # The long form is understood by both GNU tar and bsdtar.
+    # tar splits --use-compress-program on spaces itself; GNU tar and bsdtar both accept it.
     def filter(level) = argv(level)&.join(" ")
   end
 
@@ -102,7 +94,6 @@ module Rakpak
 
   def self.tar_codec(id) = TAR_CODECS.find { |c| c.id == id }
 
-  # A zip container written by Info-ZIP, with one of its entry methods.
   ZipMethod = Struct.new(:id, :label, :flag, :levels, :default, :blurb, keyword_init: true) do
     def available?
       flag == "bzip2" ? Tools.zip_has_bzip2? : Tools.available?("zip")
@@ -127,15 +118,11 @@ module Rakpak
                   blurb: ".zip with no compression")
   ].freeze
 
-  # Everything the zip target can produce: a .zip of anything, or a lone
-  # file run through one compressor (notes.txt.gz).
   COMPRESSORS = (ZIP_METHODS + TAR_CODECS.reject { |c| c.id == :none }).freeze
 
   def self.compressor(id) = COMPRESSORS.find { |c| c.id == id }
 
-  # Toggleable switches, rendered as a checklist.
   Flag = Struct.new(:id, :label, :args, :on, :blurb, :needs, keyword_init: true) do
-    # `needs` lists the tar flavours that understand this switch.
     def supported?(flavor) = needs.nil? || needs.include?(flavor)
   end
 
@@ -143,7 +130,6 @@ module Rakpak
   BOTH = %i[gnu bsd unknown].freeze
   ALL  = %i[gnu bsd busybox unknown].freeze
 
-  # Only flags this machine's tar understands are offered.
   def self.tar_flags(flavor = Tools.tar_flavor)
     [
       Flag.new(id: :verbose, label: "verbose", args: ["-v"], on: true, needs: ALL,

@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 module Rakpak
-  # SGR fragments. Every style is emitted after a reset, so they compose by
-  # concatenation without needing to be self-contained.
+  # Every style is emitted after a reset, so fragments needn't be self-contained.
   module Theme
     RESET     = "\e[0m"
 

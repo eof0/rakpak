@@ -3,7 +3,6 @@
 require "io/console"
 
 module Rakpak
-  # Raw-mode terminal control and key decoding.
   module Term
     ARROWS = { "A" => :up, "B" => :down, "C" => :right, "D" => :left,
                "H" => :home, "F" => :end }.freeze
@@ -52,8 +51,7 @@ module Rakpak
       $stdout.flush
     end
 
-    # Blocks up to `timeout` seconds. Returns a key symbol, a printable
-    # String, or nil on timeout.
+    # Returns a key symbol, a printable String, or nil on timeout.
     def wait_key(timeout = nil)
       return nil unless IO.select([$stdin], nil, nil, timeout)
 
@@ -78,10 +76,7 @@ module Rakpak
       end
     end
 
-    # Under a C locale getc yields one byte at a time, and under UTF-8 a
-    # stray byte arrives as a one-byte invalid string. Gather the rest of
-    # the sequence when there is one; if the result is still not valid
-    # text, the key is dropped rather than raised on later.
+    # C locale getc yields single bytes; gather the sequence and drop it if still invalid.
     def complete_utf8(c)
       s = c.dup.force_encoding(Encoding::UTF_8)
       return s if s.valid_encoding?
@@ -109,9 +104,7 @@ module Rakpak
       nil
     end
 
-    # An arrow key arrives as several bytes. Over a slow link they can be
-    # split across reads, so allow a generous window before concluding the
-    # user pressed a bare Esc. The delay is only ever paid on a real Esc.
+    # Escape sequences can split across reads on slow links; only a real Esc pays this wait.
     ESC_WINDOW = 0.05
 
     def read_escape
@@ -139,7 +132,6 @@ module Rakpak
           :esc
         end
       else
-        # Alt-<char>: the whole sequence is the character.
         :"alt_#{seq}"
       end
     end

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 module Rakpak
-  # One filesystem row. Stats are taken once, lazily, and never raise.
   class Entry
     attr_reader :path, :name
 
@@ -64,13 +63,11 @@ module Rakpak
       Theme::NORMAL
     end
 
-    # The name as comparable text: lowercased, with bytes that are not
-    # valid UTF-8 replaced so downcase cannot raise on them.
+    # Scrub invalid UTF-8 first, or downcase raises.
     def fold
       @fold ||= (@name.valid_encoding? ? @name : @name.scrub("?")).downcase
     end
 
-    # Dirs first, then case-insensitive natural order.
     def sort_key
       [dir? ? 0 : 1, fold, @name]
     end

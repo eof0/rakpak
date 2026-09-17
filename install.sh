@@ -58,13 +58,11 @@ else
   root="$share"
   echo "installed to $share"
 fi
-# The launcher in bin/ is the same stub the gem ships, so it does not set
-# the load path itself; this wrapper does.
+# bin/rakpak (the gem's stub) doesn't set the load path; this wrapper does.
 printf '#!/bin/sh\nexec ruby -I "%s/lib" "%s/bin/rakpak" "$@"\n' "$root" "$root" > "$launcher"
 chmod +x "$launcher"
 echo "created $launcher"
 
-# Is the bin folder on PATH already?
 case ":${PATH}:" in
   *":${bin}:"*) on_path=yes ;;
   *) on_path=no ;;

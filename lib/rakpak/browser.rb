@@ -6,8 +6,6 @@ require_relative "theme"
 require_relative "text"
 
 module Rakpak
-  # The yazi-style three-pane file browser: parent, current, preview.
-  # Owns navigation and the tag set; knows nothing about archiving.
   class Browser
     attr_reader :cwd, :tags, :filter
 
@@ -19,7 +17,7 @@ module Rakpak
       @show_hidden = false
       @filter = nil
       @filtering = false
-      @show_queue = true # on until someone presses t
+      @show_queue = true
       @pending = nil
       @preview_cache = {}
       @cwd = resolve(start_dir)
@@ -30,8 +28,6 @@ module Rakpak
       d = File.dirname(d) until File.directory?(d) || d == "/"
       d
     end
-
-    # ---------------------------------------------------------------- state
 
     def entries
       list = @dirs.list(@cwd, hidden: @show_hidden) || []
@@ -58,14 +54,12 @@ module Rakpak
       path = File.expand_path(path)
       return unless @tags.add?(path)
 
-      # A figure may linger from a cursor-only pack of this path; a new tag
-      # must not trust it.
+      # A figure may linger from a cursor-only pack of this path; don't trust it.
       @sizer&.forget(path)
       @sizer&.request(path)
     end
 
-    # Every path out of the tag set goes through here so the sizer drops
-    # its figure; re-tagging later must measure again, not serve a stale one.
+    # All tag removals must pass here so the sizer drops its now-stale figure.
     def untag(path)
       return unless @tags.delete?(path)
 
@@ -87,8 +81,6 @@ module Rakpak
       list.each { |p| tag(p) }
     end
 
-    # Selections implied by the current state: explicit tags, else whatever
-    # the cursor is sitting on.
     def selection
       return @tags.to_a.sort if @tags.any?
 
@@ -104,14 +96,10 @@ module Rakpak
       @tags.each { |p| @sizer.request(p) }
     end
 
-    # ----------------------------------------------------------- navigation
-
     def move(delta)
       self.index = index + delta
     end
 
-    # One step at a time wraps: up from the top lands on the last entry,
-    # down from the bottom on the first. Page moves still stop at the ends.
     def step(delta)
       n = entries.size
       return if n.zero?
@@ -148,7 +136,6 @@ module Rakpak
       true
     end
 
-    # Open the folder holding `path` with the cursor on it.
     def jump_to(path)
       path = File.expand_path(path)
       return false unless goto(File.dirname(path))
@@ -159,7 +146,6 @@ module Rakpak
       !idx.nil?
     end
 
-    # Returns :quit, :archive, :unpack, :tags, :help, :jobs or nil.
     def handle(key)
       return handle_filter(key) if @filtering
 
@@ -170,8 +156,7 @@ module Rakpak
         when "h" then return goto(Dir.home) && nil
         when "r" then return goto("/") && nil
         end
-        # Anything else was not a chord: treat it as its own keystroke, so
-        # a stray g never swallows q, p or space.
+        # Not a chord: handle it as its own key so a stray g never swallows q, p or space.
       end
 
       result = case key
@@ -238,8 +223,6 @@ module Rakpak
 
     def page = @page_size || 10
 
-    # -------------------------------------------------------------- drawing
-
     def draw(screen, status_line)
       @page_size = screen.h - 5
       draw_header(screen)
@@ -250,8 +233,6 @@ module Rakpak
       draw_footer(screen, screen.h - 1, status_line)
     end
 
-    # Left to right: the queue (when shown), parent, current, preview. The
-    # queue takes its slice first and the usual three share what is left.
     def layout(w)
       panes = []
       x = 0
@@ -309,9 +290,6 @@ module Rakpak
       end
     end
 
-    # Everything queued for the next pack, wherever on the disk it lives:
-    # the name, then where it is, with the size at the edge and the running
-    # total on top. Stays put while you keep browsing.
     def draw_queue(screen, pane, y, h)
       x = pane[:x]
       w = pane[:w]
@@ -423,8 +401,7 @@ module Rakpak
     end
 
     def file_preview(entry, w, h)
-      # Reading a FIFO or a device blocks until someone writes to it, which
-      # would freeze the UI with the cursor merely resting on the entry.
+      # Reading a FIFO or device blocks and would freeze the UI.
       kind = entry.target_stat
       return [["not a regular file", Theme::FAINT]] unless kind&.file?
 
@@ -444,7 +421,6 @@ module Rakpak
       [[e.class.name.split("::").last, Theme::ERR]]
     end
 
-    # Bytes per row adapts to the pane so the ASCII column always fits.
     def hexdump(bytes, rows, width)
       return [] if rows <= 0
 

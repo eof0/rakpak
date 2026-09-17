@@ -28,19 +28,15 @@ module Rakpak
 
   Options = Struct.new(:dir, :pack, :unpack, :action, keyword_init: true)
 
-  # A folder as a person would type it: ~, ~/x, $HOME/x, ${HOME}/x, or an
-  # absolute or relative path.
   def self.expand_dir(text)
     text = text.to_s.strip
     text = text.gsub(/\$\{(\w+)\}|\$(\w+)/) { ENV.fetch(::Regexp.last_match(1) || ::Regexp.last_match(2), "") }
     text = "~" if text.empty?
     File.expand_path(text)
   rescue ArgumentError
-    text # ~nosuchuser and the like; the caller reports it is not a folder
+    text
   end
 
-  # Returns Options. `action` is :browse, :unpack, :help or :version. Raises
-  # ArgumentError on anything it does not understand.
   def self.parse(argv)
     pack_mode = false
     depack_mode = false
@@ -81,8 +77,6 @@ module Rakpak
       paths.each do |p|
         raise ArgumentError, "no such file or folder: #{p}" unless File.exist?(p) || File.symlink?(p)
       end
-      # Open the browser on the folder holding the first target, with that
-      # target under the cursor, so the archive lands next to it.
       Options.new(action: :browse, dir: File.dirname(paths.first), pack: paths, unpack: [])
     else
       raise ArgumentError, "expected one folder, got #{positional.size}" if positional.size > 1
@@ -94,10 +88,6 @@ module Rakpak
     end
   end
 
-  # Unpacks each archive into the folder you are standing in, the way tar
-  # would, each into a folder of its own name. A lone compressed file has
-  # nothing to wrap, so it lands beside you. Returns an exit status;
-  # one bad archive does not stop the rest.
   def self.unpack_all(archives, dir: Dir.pwd, out: $stdout)
     status = 0
     archives.each do |archive|
@@ -111,7 +101,7 @@ module Rakpak
       end
       out.puts "#{Text.plain(File.basename(archive))} → #{Text.plain(Text.tilde(plan.dest))}"
       plan.warnings.each { |w| out.puts "  #{w}" }
-      # Anything the job says goes to stderr; keep the two streams in order.
+      # The job writes to stderr; flush so the streams stay in order.
       out.flush
       status = 1 unless run_headless(plan, out)
     end
@@ -120,12 +110,8 @@ module Rakpak
     130
   end
 
-  # True when it worked. On a terminal the count is rewritten in place; down
-  # a pipe only the closing line is written, so logs stay readable.
-  #
-  # The extractor runs in its own process group so a cancel can take its whole
-  # pipeline, which also means the terminal's ctrl-c never reaches it. Catching
-  # the interrupt here is what stops tar carrying on without us.
+  # The extractor runs in its own process group, so ctrl-c never reaches it;
+  # catching Interrupt here is what stops tar carrying on without us.
   def self.run_headless(plan, out)
     job = Job.new(plan).start
     live = out.respond_to?(:tty?) && out.tty?
@@ -147,9 +133,7 @@ module Rakpak
     out.print "\r\e[K" if live
     unless job.ok?
       warn "rakpak: #{job.error}"
-      # The exit status says a tool failed; its own last words say why.
-      # Member names come from inside the archive, so they reach the shell
-      # defanged, the way the finished-job report does.
+      # Member names come from inside the archive; defang before printing.
       job.tail(4).each { |line| warn "  #{Text.plain(line)}" unless line.start_with?("▸") }
       return false
     end
@@ -157,7 +141,6 @@ module Rakpak
     true
   end
 
-  # Exit status.
   def self.start(argv = ARGV)
     begin
       opts = parse(argv)
@@ -174,7 +157,6 @@ module Rakpak
       puts "rakpak #{VERSION}"
       return 0
     when :unpack
-      # Nothing to browse and nothing to ask, so this works down a pipe.
       return unpack_all(opts.unpack)
     end
     unless $stdout.tty? && $stdin.tty?

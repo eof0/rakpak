@@ -4,14 +4,7 @@ require_relative "formats"
 require_relative "text"
 
 module Rakpak
-  # Turns a set of tagged paths plus the wizard's answers into one concrete
-  # command. Nothing here shells out; commands are spawned without a shell,
-  # so spaces and quotes in filenames are never a hazard.
-  #
-  # Three shapes of output, one file each:
-  #   :both   tar, then compress            name.tar.gz, name.tar.zst, ...
-  #   :tar    plain tar, no compression     name.tar
-  #   :zip    compression only              name.zip, or name.txt.gz for one file
+  # :both tar then compress, :tar plain tar, :zip compress only (name.zip, or name.txt.gz for one file)
   class Plan
     TARGETS = %i[both tar zip].freeze
 
@@ -24,7 +17,6 @@ module Rakpak
       @outdir = outdir
       @basename = basename
       @target = target
-      # gzip is the one every system can read; anything else is opt-in.
       @tar_codec = TAR_CODECS.find { |c| c.id == :gzip && c.available? } || tar_codec_fallback
       @tar_level = @tar_codec.default
       @tar_flags = Rakpak.tar_flags
@@ -33,12 +25,8 @@ module Rakpak
       @zip_flags = Rakpak.zip_flags
     end
 
-    # Drop anything already covered by another selection: tagging ~/docs and
-    # then ~/docs/notes would otherwise store notes twice, silently.
     def self.prune(paths)
-      # Sorting by path components puts every descendant right after its
-      # ancestor ("a/b" before "a-x"), so one pass with a stack of accepted
-      # ancestors is enough, however many paths there are.
+      # Sorting by components puts descendants right after their ancestor ("a/b" before "a-x").
       sorted = paths.map { |p| File.expand_path(p) }.uniq.sort_by { |p| p.split("/") }
       kept = []
       stack = []
@@ -56,15 +44,10 @@ module Rakpak
       path.start_with?(dir == "/" ? "/" : "#{dir}/")
     end
 
-    # "none" needs no tool so it is always available; it is the last
-    # resort, not the first pick, when gzip is missing.
     def tar_codec_fallback
       TAR_CODECS.find { |c| c.bin && c.available? } || Rakpak.tar_codec(:none)
     end
 
-    # One format's knobs behind a uniform face, so the option form does not
-    # need to know whether it is editing tar or compressor settings. Picking
-    # a codec resets the level to that codec's default.
     class Side
       attr_reader :options, :flags
 
@@ -83,7 +66,7 @@ module Rakpak
         @plan.public_send("#{@level_attr}=", v)
       end
 
-      # [label, id, enabled, why] rows for the form's choice list.
+      # [label, id, enabled, why] rows.
       def choices = @plan.public_send(@choices)
 
       def codec=(id)
@@ -103,13 +86,10 @@ module Rakpak
                      flags: @zip_flags, choices: :compress_choices)
     end
 
-    # "both" means compressed, so "none" is not on offer there.
     def tar_choices
       TAR_CODECS.reject { |c| c.id == :none }.map { |c| [c.label, c.id, c.available?, c.why_not] }
     end
 
-    # Single-file compressors only make sense for exactly one file; zip can
-    # take anything.
     def compress_choices
       COMPRESSORS.map do |c|
         ok = c.available? && (c.container? || single_file?)
@@ -120,13 +100,8 @@ module Rakpak
 
     def single_file? = @paths.size == 1 && File.file?(@paths.first)
 
-    # True when the output is a bare compressed file (notes.txt.gz), where
-    # the original name should be kept whole.
     def single_compress? = @target == :zip && !@compressor.container?
 
-    # Deepest directory containing every tagged path. Members are stored
-    # relative to it, so the archive has a sane shape no matter how far
-    # apart the selections were.
     def base
       @base ||= begin
         dirs = @paths.map { |p| File.dirname(p) }
@@ -160,21 +135,16 @@ module Rakpak
     def output = File.join(@outdir, ensure_ext(@basename, ext))
     def outputs = [output]
 
-    # Nothing to make ready: the destination folder was checked, not created,
-    # and every step writes straight to its final name.
     def prepare; end
     def commit; end
     def rollback; end
 
-    # What the job view calls this work while it runs.
     def gerund = "archiving"
 
-    # One line for the notice when it finishes.
     def outcome
       outputs.map { |o| "#{File.basename(o)} #{Text.bytes(file_size(o))}" }.join(" · ")
     end
 
-    # What follows the path on the line printed to the shell afterwards.
     def report_note = Text.bytes(file_size(output))
 
     def file_size(path)
@@ -183,28 +153,20 @@ module Rakpak
       nil
     end
 
-    # How many members the job should expect, for the progress bar. The
-    # sizer has been counting the selection since it was tagged.
     def total_members(sizer)
       files = sizer.total(@paths).files
       files.positive? ? files : nil
     end
 
-    # Every step here writes one archive file, and the confirm screen has
-    # said an existing one goes.
     def clobbers_output? = true
 
-    # Extensions a user might type that we would otherwise double up.
     ARCHIVE_EXTS = (TAR_CODECS.map(&:ext) + TAR_CODECS.map(&:single_ext) + %w[.tgz .tbz2 .txz .zip])
                    .reject(&:empty?).uniq.sort_by { |e| -e.length }.freeze
 
     def ensure_ext(name, ext)
       return name if name.downcase.end_with?(ext)
-      # backup.tar gzipped on its own is backup.tar.gz; the name is the
-      # point, so nothing is stripped from it.
       return "#{name}#{ext}" if single_compress?
 
-      # Strip a competing archive extension the user may have typed.
       typed = ARCHIVE_EXTS.find { |e| name.downcase.end_with?(e) }
       stripped = typed ? name[0...-typed.length] : name
       stripped = name if stripped.empty?
@@ -236,8 +198,6 @@ module Rakpak
       argv + members.map { |m| dashsafe(m) }
     end
 
-    # gzip and friends read one file and write to stdout; the job redirects
-    # that into the output path.
     def single_argv
       @compressor.argv(@comp_level) + [dashsafe(members.first)]
     end
@@ -265,8 +225,7 @@ module Rakpak
       end
     end
 
-    # Display form of the command. Execution never goes through a shell, so
-    # this is for the reader's benefit; quote only what needs it.
+    # Display only; execution never goes through a shell.
     def self.show_arg(arg)
       arg.match?(%r{\A[\w@%+=:,./-]+\z}) ? arg : "'#{arg.gsub("'", %q('"'"'))}'"
     end
@@ -280,7 +239,6 @@ module Rakpak
       steps.map { |(label, argv, _, stdout)| [label, Plan.show_cmd(argv, stdout)] }
     end
 
-    # Problems worth blocking on, checked right before the run.
     def problems
       errs = []
       errs << "nothing selected" if @paths.empty?
@@ -302,7 +260,6 @@ module Rakpak
       errs.compact.uniq
     end
 
-    # Non-blocking things the confirm screen should say out loud.
     def warnings
       warn = []
       o = output

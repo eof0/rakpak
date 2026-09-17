@@ -4,8 +4,6 @@ require_relative "text"
 require_relative "theme"
 
 module Rakpak
-  # A character grid. Everything draws into cells, so modals overlay the
-  # browser cleanly and the whole frame ships in one write.
   class Screen
     attr_reader :w, :h
 
@@ -25,7 +23,6 @@ module Rakpak
       @st.fill(style)
     end
 
-    # Writes `text` at (x, y). Returns the column just past the text.
     def put(x, y, text, style = nil)
       return x if y.negative? || y >= @h
 
@@ -50,17 +47,14 @@ module Rakpak
       cx
     end
 
-    # A double-width glyph owns two cells: itself and an empty marker after
-    # it. Writing over either half must blank the other, or the row renders
-    # one column too wide and the terminal wraps it.
+    # A wide glyph owns two cells; overwriting either half must blank the other or the row wraps.
     def clear_halves(idx)
       col = idx % @w
       @ch[idx - 1] = " " if @ch[idx] == "" && col.positive? && Text.gw(@ch[idx - 1]) == 2
       @ch[idx + 1] = " " if col < @w - 1 && @ch[idx + 1] == "" && Text.gw(@ch[idx]) == 2
     end
 
-    # Last line of defence: a single binary byte reaching @ch would make the
-    # whole frame fail to concatenate and take the app down mid-render.
+    # One binary byte in @ch would break frame concatenation mid-render.
     def printable(text)
       str = text.to_s
       str = str.dup.force_encoding(Encoding::UTF_8) unless str.encoding == Encoding::UTF_8
@@ -104,8 +98,6 @@ module Rakpak
       end
     end
 
-    # Flatten everything to a faint monochrome so a modal reads as the
-    # foreground layer.
     def veil(style = Theme::FAINT)
       @st.fill(style)
     end

@@ -3,8 +3,6 @@
 require_relative "plan"
 
 module Rakpak
-  # Runs a plan's steps on a worker thread, streaming output into a ring
-  # buffer. The UI polls it; backgrounding is just "stop looking at it".
   class Job
     KEEP = 400
 
@@ -24,7 +22,7 @@ module Rakpak
       @verbose = true
       @cancel = false
       @pid = nil
-      @spawned = nil # output path of the step currently being written
+      @spawned = nil
       @started_at = nil
       @finished_at = nil
     end
@@ -57,8 +55,6 @@ module Rakpak
 
     def total_files = @total_files
 
-    # nil when there is nothing to measure progress against: no file total,
-    # or a step whose tool is not listing members (verbose off).
     def fraction
       return nil unless @total_files&.positive? && @verbose
 
@@ -67,8 +63,7 @@ module Rakpak
       [base + (per * [@file_count.to_f / @total_files, 1.0].min), 1.0].min
     end
 
-    # Bytes on disk for whatever this step is writing right now. A folder
-    # being extracted into has only its own inode size, which means nothing.
+    # A directory's own size means nothing mid-extraction.
     def output_size
       out = writing_now
       return nil if out.nil? || File.directory?(out)
@@ -78,8 +73,6 @@ module Rakpak
       nil
     end
 
-    # A step redirected to a file is writing that file; otherwise the tool is
-    # writing the plan's output itself.
     def writing_now
       i = [@step_index, @steps.size - 1].min
       @steps[i]&.[](3) || @plan.outputs[[i, @plan.outputs.size - 1].min]
@@ -101,7 +94,6 @@ module Rakpak
       kill_current
     end
 
-    # Blocks until the worker is finished, for at most `secs`.
     def wait(secs = nil) = @thread&.join(secs)
 
     private
@@ -113,7 +105,7 @@ module Rakpak
       return unless pid
 
       begin
-        Process.kill("TERM", -pid) # the whole group: tar and its compressor
+        Process.kill("TERM", -pid) # whole group: tar and its compressor
       rescue StandardError
         nil
       end
@@ -145,7 +137,7 @@ module Rakpak
         @step_index = idx
         @file_count = 0
         @verbose = verbose
-        # A cancel that lands between steps must not start the next one.
+        # A cancel between steps must not start the next one.
         return finish(:cancelled) if @cancel
 
         push("▸ #{label}: #{Plan.show_cmd(argv, stdout)}")
@@ -166,8 +158,7 @@ module Rakpak
     end
 
     def failure_message(label, status)
-      # status is nil when the command could not be spawned at all; in that
-      # case run_step already recorded the useful message.
+      # nil status: spawn failed and run_step already set @error.
       return @error || "#{label} could not be started" if status.nil?
 
       if status.signaled?
@@ -187,14 +178,8 @@ module Rakpak
       @finished_at = now
     end
 
-    # A half-written archive is worse than no archive: it opens, lists a few
-    # members, then fails. Remove it, but only the output of the step that
-    # was actually interrupted. Archives finished by earlier steps are whole
-    # and must survive, and a step that never spawned wrote nothing.
-    #
-    # An extraction is the other way round: its output is a folder full of
-    # files that were there before, or are the part of the job that did
-    # work. Those are not ours to throw away.
+    # Remove only the interrupted step's half-written archive; earlier ones are whole.
+    # Extraction output may hold pre-existing files, so it is never removed.
     def cleanup_incomplete
       return unless @plan.clobbers_output?
 
@@ -207,15 +192,9 @@ module Rakpak
       push("could not remove #{File.basename(path)}: #{e.message}")
     end
 
-    # `stdout` names a file the command's output is the archive for (gzip -c);
-    # otherwise stdout joins stderr in the log.
     def run_step(argv, stdout = nil)
       out = stdout || @plan.outputs[@step_index]
-      # Every tool asked to create an archive gets a clear path to write to,
-      # and the confirm screen has said an existing one will be overwritten.
-      # zip would otherwise update it in place, keeping members that no
-      # longer exist. An extraction writes into a folder instead, which must
-      # be left exactly as it is.
+      # zip would otherwise update an existing archive in place, keeping stale members.
       clear_path(out) if @plan.clobbers_output?
       @spawned = out
 
@@ -250,8 +229,7 @@ module Rakpak
           rescue EOFError
             break
           end
-          # A pipe hands back binary. Filenames are arbitrary bytes, so this
-          # has to be made printable before it can meet the UTF-8 frame.
+          # Filenames are arbitrary bytes; scrub before they meet the UTF-8 frame.
           buf << chunk.force_encoding(Encoding::UTF_8).scrub("·")
           # tar emits newlines, zip rewrites lines with \r.
           while (m = buf.match(/[\r\n]/))
@@ -269,11 +247,7 @@ module Rakpak
       status
     end
 
-    # Never a directory: that is a destination, not something we wrote.
-    #
-    # lstat, not exist?: a symlink whose target is missing does not "exist",
-    # and leaving one here would mean opening the path later and writing
-    # through it to wherever it points. Remove the link itself.
+    # lstat: a dangling symlink is not exist?, and writing through it would escape the folder.
     def clear_path(path)
       return unless path
 
@@ -285,14 +259,11 @@ module Rakpak
       File.unlink(path) unless st.directory?
     end
 
-    # The tool must never open its own output: between clearing the path and
-    # the spawn, anything already sitting there could be a symlink out of the
-    # folder. O_EXCL means we either create the file or refuse to write at
-    # all, and O_NOFOLLOW refuses a link even if one appears first.
+    # O_EXCL|O_NOFOLLOW: never write through a symlink planted after clear_path.
     SINK_FLAGS = File::WRONLY | File::CREAT | File::EXCL |
                  (defined?(File::NOFOLLOW) ? File::NOFOLLOW : 0)
 
-    # 0666 so the result lands on the user's umask, as a shell redirect would.
+    # 0666 so the result respects umask, like a shell redirect.
     def open_sink(path) = File.open(path, SINK_FLAGS, 0o666)
 
     def record(line)

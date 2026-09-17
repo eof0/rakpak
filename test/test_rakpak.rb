@@ -323,9 +323,7 @@ def test_a_pre_existing_output_is_replaced_and_a_failed_replacement_is_not_left_
   sleep 0.02 while job.running?
 
   assert_equal :failed, job.state
-  # The confirm screen warned that the output would be overwritten, and
-  # tar truncates it the moment it starts anyway. What must not remain is
-  # a zero-byte husk pretending to be the old archive.
+  # tar truncates the output on start; don't leave a zero-byte husk.
   refute File.exist?(plan.output),
          "a failed run must not leave a truncated output behind"
 end
@@ -342,7 +340,6 @@ end
 end
 
 class JobFailureTest < Minitest::Test
-  # A plan whose second step cannot possibly run.
   class HalfFail < Rakpak::Plan
     def outputs = [output, "#{output}.second"]
 
@@ -419,7 +416,7 @@ class NonAsciiTest < Minitest::Test
 
     screen = Rakpak::Screen.new(80, 10)
     job.tail(5).each_with_index { |l, i| screen.put(0, i, l) }
-    screen.render # must not raise Encoding::CompatibilityError
+    screen.render
     assert(job.tail(5).all? { |l| l.encoding == Encoding::UTF_8 && l.valid_encoding? })
   end
 
@@ -454,7 +451,7 @@ class ShortTerminalTest < Minitest::Test
       app.instance_variable_set(:@screen, Rakpak::Screen.new(80, rows))
       app.instance_variable_set(:@mode, :job)
       app.instance_variable_set(:@focus_job, Rakpak::Job.new(plan))
-      app.send(:draw) # used to raise ArgumentError: negative array size
+      app.send(:draw)
     end
   end
 end
@@ -547,8 +544,7 @@ class ArgsTest < Minitest::Test
   def test_a_folder_argument_is_expanded_and_used
     o = Rakpak.parse(["#{@dir}/docs/"])
     assert_equal "#{@dir}/docs", o.dir
-    # macOS temp folders live behind a /private symlink, and "." resolves
-    # to the real one.
+    # macOS temp dirs sit behind a /private symlink that "." resolves.
     Dir.chdir(@dir) { assert_equal Dir.pwd, Rakpak.parse(["."]).dir }
   end
 
@@ -741,8 +737,7 @@ def test_cancel_between_steps_keeps_the_finished_first_output
   end
   plan = slow.new(paths: ["#{@dir}/src"], outdir: @dir, basename: "b", target: :tar)
   job = Rakpak::Job.new(plan)
-  # Cancel the instant the second step is announced: the gap after the
-  # first has finished and before the second has spawned.
+  # Cancel after the first step finishes but before the second spawns.
   job.define_singleton_method(:push) do |line|
     super(line)
     cancel if line.start_with?("▸ slow")
@@ -1025,9 +1020,9 @@ class WhereStepTest < Minitest::Test
   def plain(m) = (s = Rakpak::Screen.new(120, 30); m.draw(s); s.render.gsub(/\e\[[0-9;]*[A-Za-z]/, ""))
 
   def to_where_step
-    key(:enter) # target: compressed tarball
+    key(:enter)
     assert_kind_of Rakpak::DynamicForm, modal
-    key(:enter) # options
+    key(:enter)
     assert_kind_of Rakpak::WhereModal, modal
   end
 
@@ -1035,8 +1030,7 @@ class WhereStepTest < Minitest::Test
     to_where_step
     text = plain(modal)
     assert_includes text, "1. This directory"
-    # A long temp path is clipped from the left to fit the panel, so check
-    # the tail; a tilde-shortened path would not have it.
+    # Long paths are clipped from the left, so check the tail.
     assert_includes text, @dir[-30..], "the real path, not a tilde-shortened one"
     assert_includes text, "2. Home directory"
     assert_includes text, Dir.home
@@ -1077,7 +1071,7 @@ class WhereStepTest < Minitest::Test
 
     key(:esc)
     key("3")
-    key(:ctrl_u) # the field remembers what was typed before; clear it
+    key(:ctrl_u) # the field remembers earlier input
     type(@dir)
     key(:enter)
     assert_equal @dir, plan.outdir
@@ -1230,9 +1224,9 @@ class OutputNameTest < Minitest::Test
   def key(k) = @app.send(:modal_key, k)
 
   def test_the_name_cannot_leave_the_chosen_folder
-    key(:enter) # target
-    key(:enter) # options
-    key(:enter) # where: this directory
+    key(:enter)
+    key(:enter)
+    key(:enter)
     assert_equal "output name", modal.instance_variable_get(:@title)
     field = modal
     key(:ctrl_u)
@@ -1309,7 +1303,7 @@ class SecondReviewTest < Minitest::Test
     key = ->(k) { app.send(:modal_key, k) }
     key.call(:enter)
     key.call(:enter)
-    key.call(:enter) # 1. This directory
+    key.call(:enter)
     assert_equal odd, app.instance_variable_get(:@plan).outdir
   end
 
@@ -1460,8 +1454,6 @@ class UnpackFormatTest < Minitest::Test
     assert_equal "site", U.default_subdir("/x/site.zip")
   end
 
-  # notes.txt.gz holds exactly one file, so it lands beside you as notes.txt
-  # rather than inside a pointless notes.txt/ folder.
   def test_a_lone_compressed_file_needs_no_folder
     assert_nil U.default_subdir("/x/notes.txt.gz")
     assert_equal "notes.txt", U.member_name("/x/notes.txt.gz")
@@ -1480,8 +1472,7 @@ class UnpackPlanTest < Minitest::Test
     Rakpak::Unpack.new(archive: "#{@dir}/#{name}", dest: dest)
   end
 
-  # Tools memoizes the flavor it detects; pin it for one block, then put back
-  # whatever the real tar was.
+  # Tools memoizes the detected flavor; restore the real one afterwards.
   def with_tar_flavor(flavor)
     had = Rakpak::Tools.instance_variable_defined?(:@tar_flavor)
     real = Rakpak::Tools.instance_variable_get(:@tar_flavor)
@@ -1493,8 +1484,7 @@ class UnpackPlanTest < Minitest::Test
     end
   end
 
-  # GNU tar runs "<program> -d" itself to read an archive, so the program
-  # must be the bare binary. brotli refuses a second command flag.
+  # GNU tar appends -d itself, and brotli refuses a second command flag.
   def test_gnu_tar_is_left_to_add_its_own_decompress_flag
     with_tar_flavor(:gnu) do
       _, argv, = unpack("a.tar.br").steps.first
@@ -1502,8 +1492,7 @@ class UnpackPlanTest < Minitest::Test
     end
   end
 
-  # bsdtar runs the program exactly as given, so without -d the compressor
-  # would compress the archive a second time.
+  # bsdtar runs the program as given; without -d it would compress again.
   def test_bsdtar_is_told_to_decompress
     with_tar_flavor(:bsd) do
       _, argv, = unpack("a.tar.br").steps.first
@@ -1532,8 +1521,6 @@ class UnpackPlanTest < Minitest::Test
     assert_equal ["unzip", "-o", "#{@dir}/a.zip", "-d", "#{@dir}/out"], argv
   end
 
-  # gzip writes to stdout, which Job redirects into a scratch file beside the
-  # real one; the rename happens only once gzip has exited cleanly.
   def test_a_lone_compressed_file_is_written_through_a_scratch_file
     u = unpack("notes.txt.gz", dest: @dir)
     label, argv, _, stdout = u.steps.first
@@ -1544,8 +1531,6 @@ class UnpackPlanTest < Minitest::Test
     assert_match(/ > /, u.preview.first[1])
   end
 
-  # Job chdirs into base and, for a real archive, must never treat the
-  # destination folder as something to unlink first.
   def test_the_destination_is_the_base_and_is_never_clobbered
     u = unpack("a.tar.gz")
     assert_equal "#{@dir}/out", u.base
@@ -1574,8 +1559,6 @@ class UnpackPlanTest < Minitest::Test
     assert(u.problems.any? { |m| m.include?("gzip not installed") })
   end
 
-  # Something that is not a folder standing where the destination must go
-  # should be named on the confirm screen, not raised out of mkdir mid-run.
   def test_a_file_in_the_way_of_the_destination_is_a_problem
     File.write("#{@dir}/out", "precious")
     assert(unpack("a.tar.gz").problems.any? { |m| m.include?("not a folder") },
@@ -1655,8 +1638,7 @@ class UnpackJobTest < Minitest::Test
     assert_equal "top\n", File.read("#{dest}/top.txt")
   end
 
-  # The output of an extraction is a folder. Job unlinks a pack output before
-  # each step; doing that here would delete the destination.
+  # Job unlinks a pack output before each step; here that is the destination.
   def test_the_destination_folder_and_its_contents_survive
     archive = pack
     FileUtils.mkdir_p("#{@dir}/back")
@@ -1680,7 +1662,6 @@ class UnpackJobTest < Minitest::Test
     assert_equal "precious", File.read("#{@dir}/back/keepme")
   end
 
-  # Every codec rakpak can write, it must be able to read back.
   def test_every_codec_round_trips
     Rakpak::TAR_CODECS.each do |codec|
       next unless codec.bin && codec.available?
@@ -1722,8 +1703,7 @@ class UnpackWizardTest < Minitest::Test
 
   def teardown = FileUtils.remove_entry(@dir)
 
-  # The hint bar truncates rather than wraps, so a key added to it can push
-  # another one off the end without anyone noticing.
+  # The hint bar truncates rather than wraps.
   def test_the_hint_bar_shows_every_key_it_lists
     screen = Rakpak::Screen.new(80, 20)
     Rakpak::Browser.new(@dir).draw(screen, nil)
@@ -1740,8 +1720,6 @@ class UnpackWizardTest < Minitest::Test
     assert_equal :unpack, b.handle("u")
   end
 
-  # The tag set drives packing; unpacking is about the one archive you are
-  # looking at, so it follows the cursor.
   def test_u_follows_the_cursor_not_the_tags
     app = app_on("arc.tar.gz")
     app.instance_variable_get(:@browser).tag("#{@dir}/plain.txt")
@@ -1769,7 +1747,7 @@ class UnpackWizardTest < Minitest::Test
     app.send(:dispatch, "u")
     assert_kind_of Rakpak::WhereModal, app.instance_variable_get(:@modal)
 
-    app.send(:dispatch, :enter) # this folder
+    app.send(:dispatch, :enter)
     name = app.instance_variable_get(:@modal)
     assert_kind_of Rakpak::InputModal, name
     assert_equal "arc", name.text, "the folder is named for the archive"
@@ -1779,7 +1757,6 @@ class UnpackWizardTest < Minitest::Test
     assert_equal "#{@dir}/arc", app.instance_variable_get(:@plan).dest
   end
 
-  # "." is how you say "no subfolder, put it right here".
   def test_a_dot_means_straight_into_the_chosen_folder
     app = app_on("arc.tar.gz")
     app.send(:dispatch, "u")
@@ -1799,13 +1776,12 @@ class UnpackWizardTest < Minitest::Test
     assert_nil app.instance_variable_get(:@plan)
   end
 
-  # The whole interactive path, from the key to files on disk.
   def test_the_prompts_end_in_a_real_extraction
     app = app_on("arc.tar.gz")
     app.send(:dispatch, "u")
-    app.send(:dispatch, :enter) # unpack into this folder
-    app.send(:dispatch, :enter) # keep the folder named for the archive
-    app.send(:dispatch, :enter) # confirm, and go
+    app.send(:dispatch, :enter)
+    app.send(:dispatch, :enter)
+    app.send(:dispatch, :enter)
 
     job = app.instance_variable_get(:@jobs).first
     refute_nil job, "enter on the confirm screen starts the job"
@@ -1822,8 +1798,7 @@ class UnpackWizardTest < Minitest::Test
     assert(lines.any? { |l| l.match?(/\Au\s+unpack/) }, lines.inspect)
   end
 
-  # Job asks the plan how many members to expect; an archive is not listed
-  # first, so an unpack simply counts up.
+  # An archive is not listed first, so an unpack just counts up.
   def test_an_unpack_reports_no_member_total
     u = Rakpak::Unpack.new(archive: @archive, dest: "#{@dir}/out")
     assert_nil u.total_members(Rakpak::Sizer.new)
@@ -1878,7 +1853,6 @@ class UnpackReportingTest < Minitest::Test
     assert_match(%r{\Af\.txt \d}, u.outcome)
   end
 
-  # A folder's own inode size means nothing; the status line must not show it.
   def test_a_destination_folder_has_no_byte_count_to_show
     u = unpack
     job = Rakpak::Job.new(u).start
@@ -1934,7 +1908,6 @@ class UnpackCliTest < Minitest::Test
     assert_raises(ArgumentError) { Rakpak.parse(["-d", "#{@dir}/src"]) }
   end
 
-  # "right there, like tar": the folder you are standing in.
   def test_it_unpacks_into_the_current_folder_and_needs_no_terminal
     work = "#{@dir}/work"
     FileUtils.mkdir_p(work)
@@ -1988,7 +1961,6 @@ class UnpackCliTest < Minitest::Test
   end
 end
 
-# Findings from review of the depacker. Each one reproduced a real defect.
 class UnpackSafetyTest < Minitest::Test
   U = Rakpak::Unpack
 
@@ -2013,8 +1985,7 @@ class UnpackSafetyTest < Minitest::Test
     job
   end
 
-  # The output is opened for writing before the compressor has proved it can
-  # read the archive, so it must not be the user's file.
+  # The output is opened before the compressor proves it can read the archive.
   def test_a_failed_single_unpack_leaves_the_original_alone
     File.write("#{@dir}/notes.txt", "PRECIOUS")
     File.write("#{@dir}/notes.txt.gz", "not gzip data")
@@ -2037,8 +2008,7 @@ class UnpackSafetyTest < Minitest::Test
     assert_empty Dir.children(@dir).grep(/part/)
   end
 
-  # A folder can be writable but not listable. warnings must not raise out of
-  # the render loop, and problems should name it.
+  # A folder can be writable but not listable.
   def test_a_destination_that_cannot_be_listed_is_reported_not_raised
     skip "root ignores permissions" if Process.uid.zero?
 
@@ -2049,7 +2019,7 @@ class UnpackSafetyTest < Minitest::Test
     assert(u.problems.any? { |m| m.include?("not readable") }, u.problems.inspect)
   end
 
-  # strip_ext can yield "." or "..", which File.join then resolves upwards.
+  # strip_ext can yield "." or "..", which File.join resolves upwards.
   def test_a_dotted_archive_name_cannot_walk_out_of_the_destination
     refute_equal "..", U.default_subdir("/x/...tar")
     refute_equal ".", U.default_subdir("/x/..tar.gz")
@@ -2072,7 +2042,6 @@ class UnpackSafetyTest < Minitest::Test
     assert_kind_of Rakpak::MessageModal, app.instance_variable_get(:@modal)
   end
 
-  # README says a lone compressed file skips the folder entirely.
   def test_a_lone_compressed_file_skips_the_folder_prompt
     skip "gzip missing" unless Rakpak.tar_codec(:gzip).available?
     File.write("#{@dir}/one.txt", "x\n")
@@ -2080,7 +2049,7 @@ class UnpackSafetyTest < Minitest::Test
     app = Rakpak::App.new(@dir)
     app.instance_variable_get(:@browser).jump_to("#{@dir}/one.txt.gz")
     app.send(:dispatch, "u")
-    app.send(:dispatch, :enter) # this folder
+    app.send(:dispatch, :enter)
 
     assert_kind_of Rakpak::ConfirmModal, app.instance_variable_get(:@modal),
                    "no folder-name prompt for a single file"
@@ -2095,7 +2064,6 @@ class UnpackSafetyTest < Minitest::Test
     refute File.exist?("#{@dir}/gone"), "an empty folder we made is ours to remove"
   end
 
-  # A tar that cannot pipe through a compressor should say so up front.
   def test_a_tar_that_cannot_pipe_is_refused_with_a_reason
     u = U.new(archive: @archive, dest: "#{@dir}/out")
     def u.tar_pipes? = false
@@ -2120,9 +2088,7 @@ class UnpackSafetyTest < Minitest::Test
            "app.rb must require what it uses"
   end
 
-  # Children run in their own process group so a cancel takes the whole
-  # pipeline, which also means the terminal's ctrl-c never reaches them.
-  # Without the interrupt handler, tar carries on after rakpak has gone.
+  # Children have their own process group, so terminal ctrl-c never reaches them.
   def test_an_interrupted_headless_run_takes_the_extractor_with_it
     ENV["RK_TEST_SLEEP"] = "30"
     plan = Struct.new(:base, :outputs) do
@@ -2150,9 +2116,7 @@ class UnpackSafetyTest < Minitest::Test
     ENV.delete("RK_TEST_SLEEP")
   end
 
-  # An archive can leave a symlink in the destination pointing anywhere it
-  # likes. The scratch file's name is derived from the archive, so it can be
-  # aimed at in advance; opening it must never follow the link.
+  # The scratch name derives from the archive, so a symlink can be planted there.
   def test_a_planted_symlink_in_the_destination_is_not_written_through
     skip "gzip missing" unless Rakpak.tar_codec(:gzip).available?
     File.write("#{@dir}/notes", "payload\n")
@@ -2180,8 +2144,6 @@ class UnpackSafetyTest < Minitest::Test
     assert_equal "do not touch", File.read(victim)
   end
 
-  # The same open-without-checking sat in the packing path before the unpack
-  # feature existed, so the fix belongs in Job and is checked from both sides.
   def test_a_symlinked_pack_output_is_replaced_not_followed
     skip "gzip missing" unless Rakpak.tar_codec(:gzip).available?
     File.write("#{@dir}/one.txt", "hello\n")

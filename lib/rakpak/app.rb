@@ -11,8 +11,6 @@ require_relative "job"
 require_relative "sizer"
 
 module Rakpak
-  # Review panel for the tag set: the one place to see everything picked up
-  # across the filesystem, and drop entries without walking back to them.
   class TagsModal < Modal
     def initialize(tags:, sizer:)
       super(title: "tagged", footer: "space/d remove · D clear all · esc back")
@@ -66,8 +64,6 @@ module Rakpak
     WIZARD = %i[target options where output confirm].freeze
     UNPACK = %i[dest_where dest_name unpack_confirm].freeze
 
-    # `pack` is a list of paths to tag before the first frame; when it is
-    # non-empty the archive prompts open immediately (rakpak -p).
     def initialize(start_dir = Dir.home, pack: [])
       @sizer = Sizer.new
       @browser = Browser.new(start_dir, sizer: @sizer)
@@ -113,8 +109,7 @@ module Rakpak
 
     private
 
-    # The quit dialog promises running jobs are stopped. Give each a moment
-    # to remove its half-written archive before the terminal is handed back.
+    # Give jobs a moment to remove half-written archives before the terminal is restored.
     def stop_jobs
       running = @jobs.select(&:running?)
       return if running.empty?
@@ -160,8 +155,6 @@ module Rakpak
        "#{Text.bytes(j.output_size)} · #{Text.duration(j.elapsed)}#{more}   [b] jobs", Theme::ACCENT]
     end
 
-    # ------------------------------------------------------------- drawing
-
     MIN_W = 40
     MIN_H = 10
 
@@ -197,8 +190,6 @@ module Rakpak
       @screen.put([(@screen.w - Text.width(want)) / 2, 0].max, (@screen.h / 2) + 1, want, Theme::DIM)
     end
 
-    # Only the running state says which direction the work goes; the rest
-    # read the same either way.
     def job_title(job, state)
       case state
       when :running then job.plan.gerund
@@ -218,7 +209,6 @@ module Rakpak
 
       y = 2
       job.plan.outputs.each do |out|
-        # A folder being extracted into has no size worth showing.
         size = begin
           File.directory?(out) ? nil : File.size(out)
         rescue StandardError
@@ -260,7 +250,7 @@ module Rakpak
 
       s.hline(0, y, s.w, Theme::BORDER)
       y += 1
-      rows = [s.h - y - 1, 0].max # a very short terminal leaves no room at all
+      rows = [s.h - y - 1, 0].max
       job.tail(rows).each_with_index do |line, i|
         style = if line.start_with?("▸") then Theme::ACCENT
                 elsif line.match?(/error|cannot|denied|warning/i) then Theme::WARN
@@ -286,8 +276,6 @@ module Rakpak
         end
       end
     end
-
-    # ------------------------------------------------------------ dispatch
 
     def dispatch(key)
       return modal_key(key) if @modal
@@ -316,12 +304,12 @@ module Rakpak
         end
       when :enter
         @mode = :browse unless job.running?
-      when "q" then request_quit # the footer says quit, so it quits
+      when "q" then request_quit
       end
     end
 
     def modal_key(key)
-      # ctrl-c backs out of any panel; raw mode delivers it as a keystroke.
+      # Raw mode delivers ctrl-c as a keystroke.
       res = key == :ctrl_c ? :cancel : @modal.handle(key)
       return if res.nil?
 
@@ -345,8 +333,6 @@ module Rakpak
       res == :done ? wizard_forward(modal) : wizard_back
     end
 
-    # -------------------------------------------------------------- wizard
-
     def start_wizard
       sel = @browser.selection
       if sel.empty?
@@ -366,8 +352,6 @@ module Rakpak
       open_wizard_step
     end
 
-    # Unpacking follows the cursor rather than the tag set: an archive is one
-    # thing with one destination, not a pile to gather up.
     def start_unpack
       e = @browser.current
       unless e && File.file?(e.path) && Unpack.archive?(e.path)
@@ -391,10 +375,6 @@ module Rakpak
       open_wizard_step
     end
 
-    # A lone file loses its extension ("notes.txt" becomes notes.tar.gz)
-    # unless the output is that file compressed on its own (notes.txt.gz).
-    # A folder keeps its name whole, dots and all. Several items take the
-    # folder name.
     def default_basename(sel)
       name = if sel.size > 1 then File.basename(@browser.cwd)
              elsif File.directory?(sel.first) || @plan&.single_compress? then File.basename(sel.first)
@@ -461,8 +441,7 @@ module Rakpak
       when :where
         @where = modal.index
         @where_text = modal.text
-        # ~ and $HOME are for typed text; a browsed folder is taken as is,
-        # even one with a dollar sign in its name.
+        # Only typed text expands ~ and $HOME; a browsed folder may contain a literal $.
         @plan.outdir = @where == 2 ? Rakpak.expand_dir(modal.result) : modal.result
       when :output
         @name_edited = true
@@ -518,7 +497,6 @@ module Rakpak
       end
     end
 
-    # A codec, its level, then that format's switches.
     def codec_form(side, title:, label:, flags_label:, flags_when_container: false)
       rows = [
         FormModal::Row.new(kind: :choice, label: label, hint: "", values: side.choices,
@@ -557,7 +535,6 @@ module Rakpak
                      validate: method(:writable_folder), title: "unpack it where?")
     end
 
-    # nil when there is no folder to name, which open_wizard_step skips over.
     def dest_name_modal
       return nil if @plan.single?
 
@@ -565,16 +542,12 @@ module Rakpak
                      value: @dest_name,
                      hint: "a new folder in #{Text.tilde(@dest_parent)}  ·  . unpacks straight in",
                      validate: lambda { |name|
-                       # The folder was chosen on the previous screen, so this
-                       # is a bare name and can never reach outside it.
                        if name.include?("/") then "just a name, no slashes; the folder was picked already"
                        elsif name.include?("\0") || name == ".." then "not a valid name"
                        end
                      })
     end
 
-    # "." is how you say "no subfolder, straight into the folder I picked",
-    # and a lone compressed file never has one to begin with.
     def sync_dest
       @plan.dest = @dest_name == "." ? @dest_parent : File.join(@dest_parent, @dest_name)
     end
@@ -599,8 +572,6 @@ module Rakpak
                      value: @plan.basename,
                      hint: "in #{Text.tilde(@plan.outdir)}  ·  #{@plan.ext} added automatically",
                      validate: lambda { |name|
-                       # The folder was chosen on the previous screen; this is
-                       # a bare filename, so it can never reach outside it.
                        if name.include?("/") then "just a name, no slashes; the folder was picked already"
                        elsif name.include?("\0") || [".", ".."].include?(name) then "not a valid name"
                        end
@@ -629,7 +600,6 @@ module Rakpak
       @wizard_pos = nil
     end
 
-    # Always opens the job view; b from there sends it to the background.
     def launch
       job = Job.new(@plan, total_files: @plan.total_members(@sizer)).start
       @jobs << job
@@ -653,8 +623,6 @@ module Rakpak
         end
       end
     end
-
-    # --------------------------------------------------------------- panels
 
     def open_tags
       list = @browser.tags.to_a.sort
@@ -714,16 +682,12 @@ module Rakpak
       return if done.empty?
 
       done.each do |j|
-        # Printed after the TUI has gone, straight to the shell, so a folder
-        # or file name carrying an escape sequence must be defanged.
+        # Printed to the shell after the TUI exits, so defang escape sequences in names.
         puts "#{Text.plain(j.plan.outputs.first)}  #{Text.plain(j.plan.report_note)}"
       end
     end
   end
 
-  # The option form follows the codec the user just picked: the level row
-  # takes that codec's range, and rows that only apply to a zip container
-  # (its switches) appear only while a container method is selected.
   class DynamicForm < FormModal
     def initialize(title:, rows:, side:, extra: [], extra_when_container: false)
       super(title: title, rows: rows + extra)
