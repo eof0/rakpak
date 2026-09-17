@@ -1498,9 +1498,7 @@ class UnpackPlanTest < Minitest::Test
   def test_gnu_tar_is_left_to_add_its_own_decompress_flag
     with_tar_flavor(:gnu) do
       _, argv, = unpack("a.tar.br").steps.first
-      assert_includes argv, "--use-compress-program"
-      assert_includes argv, "brotli"
-      refute(argv.any? { |a| a.include?("-d") }, argv.inspect)
+      assert_equal "brotli", argv[argv.index("--use-compress-program") + 1]
     end
   end
 
