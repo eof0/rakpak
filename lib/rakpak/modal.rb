@@ -430,6 +430,70 @@ module Rakpak
     end
   end
 
+  # Result is the typed names, or :tag to go mark exclusions in the file view.
+  class ExcludeModal < Modal
+    def initialize(text:, marked:)
+      super(title: "exclude", footer: "↑↓ pick · enter continue · esc back")
+      @field = InputModal.new(title: "", value: text)
+      @marked = marked
+      @index = 0
+    end
+
+    def text = @field.text
+
+    def dims(screen)
+      [[[screen.w - 6, 84].min, 44].max, [9 + [@marked.size, 1].max, screen.h - 2].min]
+    end
+
+    def body(screen, x, y, w, h)
+      choice(screen, x, y, w, "1. Names", 0)
+      @field.field(screen, x + 12, y, w - 12, active: @index.zero?)
+      screen.put(x + 3, y + 1, Text.fit("commas between; each matches at any depth, with all it holds", w - 3),
+                 Theme::MODAL_BG + Theme::DIM)
+      choice(screen, x, y + 2, w, "2. Tag files and directories", 1)
+      if @marked.empty?
+        screen.put(x, y + 4, "nothing marked", Theme::MODAL_BG + Theme::FAINT)
+        return
+      end
+      screen.put(x, y + 4, "marked", Theme::MODAL_BG + Theme::TITLE)
+      rows = h - 5
+      return if rows < 1
+
+      shown = @marked.size > rows ? @marked.first(rows - 1) : @marked
+      shown.each_with_index do |m, i|
+        screen.put(x + 3, y + 5 + i, Text.fit_left(m, w - 3), Theme::MODAL_BG + Theme::NORMAL)
+      end
+      return if shown.size == @marked.size
+
+      screen.put(x + 3, y + 5 + shown.size, "… #{@marked.size - shown.size} more", Theme::MODAL_BG + Theme::FAINT)
+    end
+
+    def choice(screen, x, y, w, label, i)
+      sel = i == @index
+      bg = sel ? Theme::CUR_BG : Theme::MODAL_BG
+      screen.fill(x - 1, y, w + 2, 1, " ", bg)
+      screen.put(x, y, label, bg + (sel ? "\e[1;38;5;231m" : Theme::NORMAL))
+    end
+
+    def handle(key)
+      case key
+      when :esc then return :cancel
+      when :enter
+        @result = @index.zero? ? text : :tag
+        return :done
+      when :up, :down, :tab then @index = 1 - @index
+      else
+        # On row 2, j/k move; anything else is typing, so it lands in the field.
+        if @index == 1 && %w[j k].include?(key) then @index = 0
+        else
+          @index = 0
+          @field.handle(key)
+        end
+      end
+      nil
+    end
+  end
+
   # Only enter runs it: a single letter (b reads as "back") is too easy to hit by mistake.
   class ConfirmModal < Modal
     def initialize(title:, lines:, warnings: [], errors: [], footer: nil)

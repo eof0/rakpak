@@ -7,6 +7,20 @@ require "fileutils"
 require "stringio"
 require "rakpak"
 
+module TarFlavor
+  # Tools memoizes the detected flavor; restore the real one afterwards.
+  def with_tar_flavor(flavor)
+    had = Rakpak::Tools.instance_variable_defined?(:@tar_flavor)
+    real = Rakpak::Tools.instance_variable_get(:@tar_flavor)
+    Rakpak::Tools.instance_variable_set(:@tar_flavor, flavor)
+    yield
+  ensure
+    if had then Rakpak::Tools.instance_variable_set(:@tar_flavor, real)
+    else Rakpak::Tools.remove_instance_variable(:@tar_flavor)
+    end
+  end
+end
+
 class TextTest < Minitest::Test
   T = Rakpak::Text
 
@@ -1023,6 +1037,8 @@ class WhereStepTest < Minitest::Test
     key(:enter)
     assert_kind_of Rakpak::DynamicForm, modal
     key(:enter)
+    assert_kind_of Rakpak::ExcludeModal, modal
+    key(:enter)
     assert_kind_of Rakpak::WhereModal, modal
   end
 
@@ -1224,9 +1240,7 @@ class OutputNameTest < Minitest::Test
   def key(k) = @app.send(:modal_key, k)
 
   def test_the_name_cannot_leave_the_chosen_folder
-    key(:enter)
-    key(:enter)
-    key(:enter)
+    4.times { key(:enter) }
     assert_equal "output name", modal.instance_variable_get(:@title)
     field = modal
     key(:ctrl_u)
@@ -1468,20 +1482,10 @@ class UnpackPlanTest < Minitest::Test
 
   def teardown = FileUtils.remove_entry(@dir)
 
+  include TarFlavor
+
   def unpack(name, dest: "#{@dir}/out")
     Rakpak::Unpack.new(archive: "#{@dir}/#{name}", dest: dest)
-  end
-
-  # Tools memoizes the detected flavor; restore the real one afterwards.
-  def with_tar_flavor(flavor)
-    had = Rakpak::Tools.instance_variable_defined?(:@tar_flavor)
-    real = Rakpak::Tools.instance_variable_get(:@tar_flavor)
-    Rakpak::Tools.instance_variable_set(:@tar_flavor, flavor)
-    yield
-  ensure
-    if had then Rakpak::Tools.instance_variable_set(:@tar_flavor, real)
-    else Rakpak::Tools.remove_instance_variable(:@tar_flavor)
-    end
   end
 
   # GNU tar appends -d itself, and brotli refuses a second command flag.
@@ -2165,5 +2169,336 @@ class UnpackSafetyTest < Minitest::Test
     end
     assert_match(/gzip|not in gzip format|unexpected/i, err,
                  "the tool's own diagnostic is the useful part")
+  end
+end
+
+class ExcludePlanTest < Minitest::Test
+  include TarFlavor
+
+  def setup
+    @dir = Dir.mktmpdir("rakpak")
+    FileUtils.mkdir_p(%W[#{@dir}/proj/src #{@dir}/proj/[draft] #{@dir}/other])
+    @plan = Rakpak::Plan.new(paths: ["#{@dir}/proj"], outdir: @dir, basename: "out", target: :tar)
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def test_typed_names_are_split_on_commas_and_tidied
+    assert_equal ["node_modules", ".thisdir", "file1.txt", "src"],
+                 Rakpak::Plan.parse_excludes(" node_modules, .thisdir ,file1.txt,, src/ ,node_modules")
+  end
+
+  def test_typed_names_become_tar_excludes_ahead_of_the_members
+    @plan.excludes = ["node_modules", "*.log"]
+    argv = @plan.tar_argv
+    assert_includes argv, "--exclude=*.log"
+    assert_operator argv.index("--exclude=node_modules"), :<, argv.index("--")
+  end
+
+  def test_marked_paths_are_anchored_in_each_tars_own_syntax
+    @plan.excluded = ["#{@dir}/proj/src"]
+    with_tar_flavor(:gnu) do
+      argv = @plan.tar_argv
+      assert_operator argv.index("--anchored"), :<, argv.index("--exclude=proj/src")
+    end
+    with_tar_flavor(:bsd) do
+      assert_includes @plan.tar_argv, "--exclude=^proj/src"
+      refute_includes @plan.tar_argv, "--anchored", "bsdtar has no --anchored"
+    end
+  end
+
+  def test_marked_paths_are_matched_literally
+    @plan.excluded = ["#{@dir}/proj/[draft]"]
+    with_tar_flavor(:gnu) { assert_includes @plan.tar_argv, "--exclude=proj/\\[draft\\]" }
+  end
+
+  def test_only_marks_strictly_inside_a_packed_folder_count
+    @plan.excluded = ["#{@dir}/proj/src", "#{@dir}/other", "#{@dir}/proj"]
+    assert_equal ["#{@dir}/proj/src"], @plan.excluded
+  end
+
+  def test_zip_matches_names_at_every_depth_and_marks_from_the_root
+    @plan.target = :zip
+    @plan.excludes = ["node_modules", "-odd"]
+    @plan.excluded = ["#{@dir}/proj/src"]
+    argv = @plan.zip_argv
+    assert_equal %w[-x node_modules node_modules/* */node_modules */node_modules/*
+                    [-]odd [-]odd/* */[-]odd */[-]odd/* proj/src proj/src/*],
+                 argv[argv.index("-x")..]
+  end
+
+  def test_no_exclusions_leave_the_commands_untouched
+    refute(@plan.tar_argv.any? { |a| a.start_with?("--exclude", "--anchored") })
+    @plan.target = :zip
+    refute_includes @plan.zip_argv, "-x"
+  end
+
+  def test_excluding_a_packed_item_by_name_warns_it_will_be_left_out
+    @plan.excludes = ["pro*"]
+    assert(@plan.warnings.any? { |w| w.include?("proj") && w.include?("left out") })
+  end
+
+  # Excluded files are still in the up-front count, which would stall the bar.
+  def test_exclusions_drop_the_progress_total
+    sizer = Rakpak::Sizer.new
+    sizer.request("#{@dir}/proj")
+    sleep 0.05 until sizer["#{@dir}/proj"]
+    @plan.excluded = ["#{@dir}/proj/src"]
+    assert_nil @plan.total_members(sizer)
+  end
+
+  def test_busybox_warns_that_marks_are_not_pinned
+    @plan.excluded = ["#{@dir}/proj/src"]
+    with_tar_flavor(:busybox) { assert(@plan.warnings.any? { |w| w.include?("busybox") }) }
+    with_tar_flavor(:gnu) { refute(@plan.warnings.any? { |w| w.include?("busybox") }) }
+  end
+end
+
+# Runs the real tools: on macOS CI this is bsdtar, here usually GNU tar.
+class ExcludeJobTest < Minitest::Test
+  KEPT = %w[proj/deep/proj/src/e proj/keep proj/srcx/b].freeze
+
+  def setup
+    @dir = Dir.mktmpdir("rakpak")
+    %w[src srcx node_modules/pkg lib/node_modules deep/proj/src [d]].each do |d|
+      FileUtils.mkdir_p("#{@dir}/proj/#{d}")
+    end
+    %w[src/a srcx/b node_modules/pkg/c lib/node_modules/d deep/proj/src/e x.log keep [d]/f].each do |f|
+      File.write("#{@dir}/proj/#{f}", "z")
+    end
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def pack(target)
+    plan = Rakpak::Plan.new(paths: ["#{@dir}/proj"], outdir: @dir, basename: "out", target: target)
+    plan.excludes = ["node_modules", "*.log"]
+    plan.excluded = ["#{@dir}/proj/src", "#{@dir}/proj/[d]"]
+    job = Rakpak::Job.new(plan).start
+    job.wait(30)
+    assert_equal :done, job.state, job.error
+    plan.output
+  end
+
+  def files(argv) = IO.popen(argv, &:read).lines.map(&:chomp).reject { |l| l.end_with?("/") }.sort
+
+  def test_tar_leaves_out_names_everywhere_and_marks_exactly
+    assert_equal KEPT, files(["tar", "-tf", pack(:tar)])
+  end
+
+  def test_zip_leaves_out_names_everywhere_and_marks_exactly
+    skip "zip or unzip missing" unless %w[zip unzip].all? { |t| Rakpak::Tools.available?(t) }
+    assert_equal KEPT, files(["unzip", "-Z1", pack(:zip)])
+  end
+end
+
+class ExcludeMarkTest < Minitest::Test
+  def setup
+    @dir = Dir.mktmpdir("rakpak")
+    FileUtils.mkdir_p("#{@dir}/sub")
+    File.write("#{@dir}/alpha.txt", "a")
+    @b = Rakpak::Browser.new(@dir)
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def plain = (s = Rakpak::Screen.new(120, 20); @b.draw(s, nil); s.render.gsub(/\e\[[0-9;]*[A-Za-z]/, ""))
+
+  def test_x_marks_an_exclusion_and_advances
+    @b.handle("x")
+    assert_equal ["#{@dir}/sub"], @b.excludes.to_a
+    assert_equal 1, @b.index
+    @b.handle("k")
+    @b.handle("x")
+    assert_empty @b.excludes
+  end
+
+  def test_tag_and_exclude_replace_each_other
+    @b.handle(:space)
+    @b.handle("k")
+    @b.handle("x")
+    assert_empty @b.tags
+    assert_equal ["#{@dir}/sub"], @b.excludes.to_a
+    @b.handle("k")
+    @b.handle(:space)
+    assert_empty @b.excludes
+    assert_equal ["#{@dir}/sub"], @b.tags.to_a
+  end
+
+  def test_clearing_tags_clears_exclusions_too
+    @b.handle(:space)
+    @b.handle("x")
+    @b.handle("D")
+    assert_empty @b.tags
+    assert_empty @b.excludes
+  end
+
+  def test_marks_show_in_the_listing_and_header
+    @b.handle("x")
+    text = plain
+    assert_includes text, "✗sub/"
+    assert_includes text, "1 excluded"
+  end
+end
+
+class ExcludeScopeTest < Minitest::Test
+  def setup
+    @dir = Dir.mktmpdir("rakpak")
+    FileUtils.mkdir_p(%W[#{@dir}/proj/src #{@dir}/docs])
+    File.write("#{@dir}/proj/a.txt", "a")
+    File.write("#{@dir}/note.txt", "n")
+    @b = Rakpak::Browser.new(@dir)
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def test_one_folder_opens_inside_it_and_cannot_be_left
+    @b.scope_to(["#{@dir}/proj"], @dir)
+    assert_equal "#{@dir}/proj", @b.cwd
+    ["h", :left, "~"].each { |k| @b.handle(k) }
+    @b.handle("g")
+    @b.handle("r")
+    assert_equal "#{@dir}/proj", @b.cwd
+  end
+
+  def test_space_and_x_mark_exclusions_instead_of_tags
+    @b.scope_to(["#{@dir}/proj"], @dir)
+    @b.handle(:space)
+    @b.handle("x")
+    assert_equal ["#{@dir}/proj/a.txt", "#{@dir}/proj/src"], @b.excludes.to_a.sort
+    assert_empty @b.tags
+  end
+
+  def test_several_items_open_at_their_parent_showing_only_those
+    @b.scope_to(["#{@dir}/note.txt", "#{@dir}/proj"], @dir)
+    assert_equal @dir, @b.cwd
+    assert_equal %w[proj note.txt], @b.entries.map(&:name)
+    assert_equal :unmarkable, @b.handle(:space), "a packed item is untagged, not excluded"
+    assert_empty @b.excludes
+    @b.handle("l")
+    @b.handle(:space)
+    assert_equal ["#{@dir}/proj/src"], @b.excludes.to_a
+  end
+
+  def test_tag_and_flow_keys_are_inert_and_p_or_esc_resume
+    @b.scope_to(["#{@dir}/proj"], @dir)
+    %w[a d D u T b].each { |k| assert_nil @b.handle(k), k }
+    assert_empty @b.tags
+    assert_equal :resume, @b.handle("p")
+    assert_equal :resume, @b.handle(:esc)
+  end
+
+  def test_leaving_restores_the_folder_and_cursor
+    @b.handle("j")
+    @b.scope_to(["#{@dir}/note.txt", "#{@dir}/proj"], @dir)
+    @b.handle("l")
+    @b.handle("j")
+    @b.leave_scope
+    refute @b.scoped?
+    assert_equal @dir, @b.cwd
+    assert_equal 1, @b.index
+    assert_equal 3, @b.entries.size, "the full listing is back"
+  end
+end
+
+class ExcludeStepTest < Minitest::Test
+  def setup
+    @dir = Dir.mktmpdir("rakpak")
+    FileUtils.mkdir_p("#{@dir}/docs/sub")
+    File.write("#{@dir}/docs/a.txt", "a")
+    @app = Rakpak::App.new(@dir, pack: ["#{@dir}/docs"])
+  end
+
+  def teardown = FileUtils.remove_entry(@dir)
+
+  def modal = @app.instance_variable_get(:@modal)
+  def plan = @app.instance_variable_get(:@plan)
+  def browser = @app.instance_variable_get(:@browser)
+  def key(k) = @app.send(:modal_key, k)
+  def dispatch(k) = @app.send(:dispatch, k)
+  def type(text) = text.each_char { |c| key(c == " " ? :space : c) }
+  def plain(m) = (s = Rakpak::Screen.new(120, 30); m.draw(s); s.render.gsub(/\e\[[0-9;]*[A-Za-z]/, ""))
+
+  def to_exclude_step
+    key(:enter)
+    key(:enter)
+    assert_kind_of Rakpak::ExcludeModal, modal
+  end
+
+  def test_typed_names_reach_the_plan_and_survive_going_back
+    to_exclude_step
+    type("node_modules, *.log")
+    key(:enter)
+    assert_equal ["node_modules", "*.log"], plan.excludes
+    assert_kind_of Rakpak::WhereModal, modal
+    key(:esc)
+    assert_includes plain(modal), "node_modules, *.log"
+  end
+
+  def test_nothing_typed_just_continues
+    to_exclude_step
+    key(:enter)
+    assert_kind_of Rakpak::WhereModal, modal
+    assert_empty plan.excludes
+  end
+
+  def test_skipped_when_nothing_packed_is_a_folder
+    @app = Rakpak::App.new(@dir, pack: ["#{@dir}/docs/a.txt"])
+    key(:enter)
+    key(:enter)
+    assert_kind_of Rakpak::WhereModal, modal
+  end
+
+  def test_tagging_walks_the_packed_folder_and_comes_back
+    to_exclude_step
+    key(:down)
+    key(:enter)
+    assert_nil modal
+    assert_equal "#{@dir}/docs", browser.cwd
+    dispatch(:space)
+    dispatch("p")
+    assert_kind_of Rakpak::ExcludeModal, modal
+    assert_equal ["#{@dir}/docs/sub"], plan.excluded
+    assert_includes plain(modal), "docs/sub"
+    assert_equal @dir, browser.cwd, "the where step's This directory must not move"
+    key(:enter)
+    assert_kind_of Rakpak::WhereModal, modal, "back from marking, enter continues"
+  end
+
+  def test_help_while_marking_leaves_the_wizard_paused
+    to_exclude_step
+    key(:down)
+    key(:enter)
+    dispatch("?")
+    assert_kind_of Rakpak::MessageModal, modal
+    key("z")
+    assert_nil modal
+    assert browser.scoped?
+    dispatch(:esc)
+    assert_kind_of Rakpak::ExcludeModal, modal
+  end
+
+  def test_x_marks_made_before_packing_are_listed
+    app = Rakpak::App.new(@dir)
+    b = app.instance_variable_get(:@browser)
+    b.tag("#{@dir}/docs")
+    b.exclude("#{@dir}/docs/sub")
+    b.exclude("#{@dir}/elsewhere")
+    @app = app
+    dispatch("p")
+    to_exclude_step
+    assert_equal ["#{@dir}/docs/sub"], plan.excluded
+  end
+
+  def test_confirm_lists_what_is_left_out
+    to_exclude_step
+    type("node_modules")
+    key(:enter)
+    key(:enter)
+    key(:enter)
+    assert_kind_of Rakpak::ConfirmModal, modal
+    text = plain(modal)
+    assert_includes text, "leaves out"
+    assert_includes text, "--exclude=node_modules"
   end
 end

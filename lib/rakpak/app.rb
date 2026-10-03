@@ -61,7 +61,7 @@ module Rakpak
 
   class App
     SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    WIZARD = %i[target options where output confirm].freeze
+    WIZARD = %i[target options exclude where output confirm].freeze
     UNPACK = %i[dest_where dest_name unpack_confirm].freeze
 
     def initialize(start_dir = Dir.home, pack: [])
@@ -288,6 +288,8 @@ module Rakpak
       when :tags then open_tags
       when :help then open_help
       when :jobs then open_jobs
+      when :resume then resume_wizard
+      when :unmarkable then notify("that one is being packed; untag it instead", Theme::WARN)
       end
     end
 
@@ -328,7 +330,8 @@ module Rakpak
         return
       end
 
-      return unless @wizard_pos
+      # While exclusions are being marked the wizard is paused; help closing must not move it.
+      return if @wizard_pos.nil? || @browser.scoped?
 
       res == :done ? wizard_forward(modal) : wizard_back
     end
@@ -345,6 +348,7 @@ module Rakpak
       sel.each { |p| @sizer.request(p) }
       @plan = Plan.new(paths: sel, outdir: @browser.cwd)
       @name_edited = false
+      @exclude_text = ""
       @where = 0
       @where_text = ""
       @wizard = WIZARD
@@ -399,8 +403,8 @@ module Rakpak
     end
 
     def wizard_forward(modal)
-      apply_step(@wizard[@wizard_pos], modal)
-      return if @wizard_pos.nil? # a step may have ended the wizard itself
+      # A step may have ended the wizard itself, or paused it.
+      return if apply_step(@wizard[@wizard_pos], modal) == :paused || @wizard_pos.nil?
 
       @wizard_pos += 1
       open_wizard_step
@@ -426,6 +430,7 @@ module Rakpak
       case step
       when :target then target_modal
       when :options then options_modal
+      when :exclude then exclude_modal
       when :where then where_modal
       when :output then output_modal
       when :confirm then confirm_modal
@@ -438,6 +443,11 @@ module Rakpak
     def apply_step(step, modal)
       case step
       when :target then @plan.target = modal.result
+      when :exclude
+        @exclude_text = modal.text
+        return pick_excludes if modal.result == :tag
+
+        @plan.excludes = Plan.parse_excludes(modal.text)
       when :where
         @where = modal.index
         @where_text = modal.text
@@ -518,6 +528,25 @@ module Rakpak
       end
     end
 
+    # Nothing to exclude from inside a lone file.
+    def exclude_modal
+      return nil unless @plan.paths.any? { |p| File.directory?(p) }
+
+      @plan.excluded = @browser.excludes.to_a
+      ExcludeModal.new(text: @exclude_text,
+                       marked: @plan.excluded.map { |p| @plan.relative(p) })
+    end
+
+    def pick_excludes
+      @browser.scope_to(@plan.paths, @plan.base)
+      :paused
+    end
+
+    def resume_wizard
+      @browser.leave_scope
+      open_wizard_step
+    end
+
     def where_modal
       WhereModal.new(here: @browser.cwd, home: Dir.home, index: @where, text: @where_text,
                      validate: method(:writable_folder))
@@ -582,9 +611,12 @@ module Rakpak
       lines = []
       lines << [:head, "#{@plan.paths.size} item#{'s' unless @plan.paths.size == 1} " \
                        "from #{Text.tilde(@plan.base)}"]
-      @plan.members.first(6).each { |m| lines << [:key, "   #{m}"] }
-      lines << [:key, "   … #{@plan.members.size - 6} more"] if @plan.members.size > 6
-      lines << [:key, ""]
+      lines.concat(listing(@plan.members))
+      if @plan.excludes.any? || @plan.excluded.any?
+        lines << [:head, "leaves out"]
+        lines << [:key, "   #{@plan.excludes.join(', ')}"] if @plan.excludes.any?
+        lines.concat(listing(@plan.excluded.map { |p| @plan.relative(p) }))
+      end
       lines << [:head, "writes #{Text.tilde(@plan.output)}"]
       lines << [:key, ""]
       @plan.preview.each do |label, cmd|
@@ -594,6 +626,12 @@ module Rakpak
       lines << [:key, ""]
       ConfirmModal.new(title: "ready", lines: lines,
                        warnings: @plan.warnings, errors: @plan.problems)
+    end
+
+    def listing(names)
+      lines = names.first(6).map { |m| [:key, "   #{m}"] }
+      lines << [:key, "   … #{names.size - 6} more"] if names.size > 6
+      lines << [:key, ""]
     end
 
     def finish_wizard
@@ -647,8 +685,9 @@ module Rakpak
         ["g g", "top"], ["G", "bottom"], ["ctrl-d ctrl-u", "half page"],
         ["g h", "home"], ["g r", "root"], ["~", "home"],
         ["space", "tag / untag, then move down"],
+        ["x", "exclude / include, then move down"],
         ["a", "tag everything here"], ["d", "untag everything here"],
-        ["D", "clear all tags"], ["T", "review tagged items"],
+        ["D", "clear all tags and exclusions"], ["T", "review tagged items"],
         ["t", "show / hide the queue pane"],
         ["/", "filter this folder"], [".", "show hidden"],
         ["ctrl-r", "reload"],

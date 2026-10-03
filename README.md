@@ -76,13 +76,18 @@ exit status is non-zero if any of them failed.
 3. **Set the flags.** Compression method, level, and the switches for that
    format. Compressed tarballs default to gzip, the one every system can
    read.
-4. **Say where.** This directory, your home directory, or one you type
+4. **Leave things out.** Type names separated by commas, like
+   `node_modules, .cache, *.log`. Each one is left out wherever it turns
+   up, along with everything inside it. Or pick *Tag files and directories*
+   to walk the folders you are packing and press `space` on the exact spots
+   to skip; `p` brings you back. Skipped when only files are packed.
+5. **Say where.** This directory, your home directory, or one you type
    into the field right there. `~`, `$HOME` and absolute paths all work,
    and typing anything jumps to the field.
-5. **Name it.** The extension is added for you.
-6. **Confirm.** You see the exact command before anything runs. Only `enter`
+6. **Name it.** The extension is added for you.
+7. **Confirm.** You see the exact command before anything runs. Only `enter`
    starts it.
-7. **Watch it, or press `b`** to drop it into the background and keep browsing.
+8. **Watch it, or press `b`** to drop it into the background and keep browsing.
 
 If nothing is tagged, `p` archives whatever the cursor is on.
 
@@ -115,8 +120,9 @@ files that were already there are never touched.
 | `ctrl-d` `ctrl-u` | half page |
 | `gh` `~` / `gr` | home / root |
 | `space` | tag or untag, then move down |
+| `x` | exclude or include, then move down: left out of anything packed around it |
 | `a` / `d` | tag / untag everything in this folder |
-| `D` | clear all tags |
+| `D` | clear all tags and exclusions |
 | `T` | review tagged items (`space` removes) |
 | `t` | show or hide the queue pane |
 | `/` | filter this folder |
