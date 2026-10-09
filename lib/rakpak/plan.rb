@@ -8,8 +8,8 @@ module Rakpak
   class Plan
     TARGETS = %i[both tar zip].freeze
 
-    attr_reader :paths
-    attr_accessor :outdir, :basename, :target
+    attr_reader :paths, :excluded
+    attr_accessor :outdir, :basename, :target, :excludes
     attr_accessor :tar_codec, :tar_level, :tar_flags, :compressor, :comp_level, :zip_flags
 
     def initialize(paths:, outdir:, basename: "archive", target: :both)
@@ -17,6 +17,8 @@ module Rakpak
       @outdir = outdir
       @basename = basename
       @target = target
+      @excludes = []
+      @excluded = []
       @tar_codec = TAR_CODECS.find { |c| c.id == :gzip && c.available? } || tar_codec_fallback
       @tar_level = @tar_codec.default
       @tar_flags = Rakpak.tar_flags
@@ -42,6 +44,25 @@ module Rakpak
 
     def self.inside?(path, dir)
       path.start_with?(dir == "/" ? "/" : "#{dir}/")
+    end
+
+    def self.parse_excludes(text)
+      slash = "/".ord
+      text.split(",").map do |name|
+        name = name.strip
+        finish = name.bytesize
+        finish -= 1 while finish.positive? && name.getbyte(finish - 1) == slash
+        name.byteslice(0, finish)
+      end.reject(&:empty?).uniq
+    end
+
+    # Marked paths are exact, so glob characters in them must not match.
+    def self.literal(path) = path.gsub(/[\\*?\[\]]/) { |c| "\\#{c}" }
+
+    # Only marks strictly inside a packed folder count; a packed item itself is untagged instead.
+    def excluded=(list)
+      @excluded = list.map { |p| File.expand_path(p) }.uniq.sort
+                      .select { |x| @paths.any? { |p| Plan.inside?(x, p) } }
     end
 
     def tar_codec_fallback
@@ -117,11 +138,11 @@ module Rakpak
       end
     end
 
-    def members
-      @paths.map do |p|
-        rel = p.delete_prefix(base == "/" ? "/" : "#{base}/")
-        rel.empty? ? File.basename(p) : rel
-      end
+    def members = @paths.map { |p| relative(p) }
+
+    def relative(path)
+      rel = path.delete_prefix(base == "/" ? "/" : "#{base}/")
+      rel.empty? ? File.basename(path) : rel
     end
 
     def ext
@@ -153,7 +174,10 @@ module Rakpak
       nil
     end
 
+    # Excluded files are inside the count, so a total would stall the bar; show the count alone.
     def total_members(sizer)
+      return nil if @excludes.any? || @excluded.any?
+
       files = sizer.total(@paths).files
       files.positive? ? files : nil
     end
@@ -179,9 +203,35 @@ module Rakpak
         argv += ["--use-compress-program", filter]
       end
       @tar_flags.each { |f| argv.concat(f.args) if f.on }
+      argv += tar_exclude_args
       argv += ["-f", output, "-C", base, "--"]
       argv + members
     end
+
+    # Names match at any depth. Marks are anchored: GNU tar takes --anchored, bsdtar a leading ^,
+    # busybox has neither (warnings says so).
+    def tar_exclude_args
+      args = @excludes.map { |n| "--exclude=#{n}" }
+      marked = @excluded.map { |p| Plan.literal(relative(p)) }
+      return args if marked.empty?
+
+      case Tools.tar_flavor
+      when *GNU then args + ["--anchored"] + marked.map { |m| "--exclude=#{m}" }
+      when :bsd then args + marked.map { |m| "--exclude=^#{m}" }
+      else args + marked.map { |m| "--exclude=#{m}" }
+      end
+    end
+
+    # zip matches -x against whole member paths, so a name needs each depth spelled out.
+    def zip_exclude_args
+      names = @excludes.map { |n| zipsafe(n) }.flat_map { |n| [n, "#{n}/*", "*/#{n}", "*/#{n}/*"] }
+      marks = @excluded.map { |p| zipsafe(Plan.literal(relative(p))) }.flat_map { |m| [m, "#{m}/*"] }
+      pats = names + marks
+      pats.empty? ? [] : ["-x", *pats]
+    end
+
+    # zip would read a leading dash as an option; [-] matches the same name.
+    def zipsafe(pat) = pat.start_with?("-") ? "[-]#{pat[1..]}" : pat
 
     def zip_argv
       argv = ["zip", "-r"]
@@ -195,7 +245,7 @@ module Rakpak
         argv.concat(f.args) if f.on
       end
       argv << output
-      argv + members.map { |m| dashsafe(m) }
+      argv + members.map { |m| dashsafe(m) } + zip_exclude_args
     end
 
     def single_argv
@@ -266,6 +316,14 @@ module Rakpak
       warn << "#{File.basename(o)} already exists and will be replaced" if File.exist?(o)
       if @paths.any? { |p| Plan.inside?(o, p) }
         warn << "output sits inside a selected folder, so it may archive itself"
+      end
+      @paths.each do |p|
+        name = File.basename(p)
+        hit = @excludes.find { |pat| File.fnmatch?(pat, name, File::FNM_DOTMATCH) }
+        warn << "#{name} matches #{hit}, so it is left out entirely" if hit
+      end
+      if @excluded.any? && @target != :zip && Tools.tar_flavor == :busybox
+        warn << "busybox tar cannot pin a mark to one spot; same-named paths deeper in go too"
       end
       warn
     end

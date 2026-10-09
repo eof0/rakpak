@@ -2,17 +2,23 @@
 
 require "set"
 require_relative "dir_cache"
+require_relative "plan"
 require_relative "theme"
 require_relative "text"
 
 module Rakpak
   class Browser
-    attr_reader :cwd, :tags, :filter
+    # Marking exclusions mid-pack: walking stays under root, back is where to return.
+    Scope = Struct.new(:root, :paths, :back)
+
+    attr_reader :cwd, :tags, :excludes, :filter
 
     def initialize(start_dir = Dir.pwd, sizer: nil)
       @dirs = DirCache.new
       @sizer = sizer
       @tags = Set.new
+      @excludes = Set.new
+      @scope = nil
       @cursor = {}
       @show_hidden = false
       @filter = nil
@@ -31,6 +37,10 @@ module Rakpak
 
     def entries
       list = @dirs.list(@cwd, hidden: @show_hidden) || []
+      # Above the packed items, only they are reachable.
+      if @scope && @cwd == @scope.root && !@scope.paths.include?(@cwd)
+        list = list.select { |e| @scope.paths.include?(e.path) }
+      end
       return list unless @filter && !@filter.empty?
 
       needle = @filter.downcase
@@ -50,8 +60,11 @@ module Rakpak
     def show_queue? = @show_queue
     def filtering? = @filtering
 
+    def scoped? = !@scope.nil?
+
     def tag(path)
       path = File.expand_path(path)
+      @excludes.delete(path)
       return unless @tags.add?(path)
 
       # A figure may linger from a cursor-only pack of this path; don't trust it.
@@ -72,9 +85,49 @@ module Rakpak
       @tags.include?(entry.path) ? untag(entry.path) : tag(entry.path)
     end
 
+    def exclude(path)
+      path = File.expand_path(path)
+      untag(path)
+      @excludes << path
+    end
+
+    def toggle_exclude(entry = current)
+      return unless entry
+
+      @excludes.delete?(entry.path) || exclude(entry.path)
+    end
+
     def tag_all = entries.each { |e| tag(e.path) }
     def untag_all_here = entries.each { |e| untag(e.path) }
-    def clear_tags = @tags.to_a.each { |p| untag(p) }
+
+    def clear_tags
+      @tags.to_a.each { |p| untag(p) }
+      @excludes.clear
+    end
+
+    # One packed folder opens inside it; several open at their common parent.
+    def scope_to(paths, base)
+      root = paths.size == 1 && File.directory?(paths.first) ? paths.first : base
+      @scope = Scope.new(root, paths, [@cwd, @cursor[@cwd], @filter])
+      @cwd = root
+      @filter = nil
+    end
+
+    def leave_scope
+      @cwd, cursor, @filter = @scope.back
+      @cursor[@cwd] = cursor
+      @scope = nil
+    end
+
+    def mark_in_scope
+      e = current
+      return unless e
+      return :unmarkable unless @scope.paths.any? { |p| Plan.inside?(e.path, p) }
+
+      toggle_exclude(e)
+      move(1)
+      nil
+    end
 
     def replace_tags(list)
       (@tags.to_a - list).each { |p| untag(p) }
@@ -118,7 +171,7 @@ module Rakpak
     end
 
     def ascend
-      return if @cwd == "/"
+      return if @cwd == "/" || @cwd == @scope&.root
 
       child = @cwd
       @cwd = File.dirname(@cwd)
@@ -130,6 +183,7 @@ module Rakpak
     def goto(dir)
       d = File.expand_path(dir)
       return false unless File.directory?(d) && File.readable?(d)
+      return false if @scope && d != @scope.root && !Plan.inside?(d, @scope.root)
 
       @cwd = d
       @filter = nil
@@ -159,6 +213,14 @@ module Rakpak
         # Not a chord: handle it as its own key so a stray g never swallows q, p or space.
       end
 
+      if @scope
+        case key
+        when :space, "x" then return mark_in_scope
+        when "p", :esc then return :resume
+        when "a", "d", "D", "u", "T", "b" then return nil
+        end
+      end
+
       result = case key
       when "j", :down  then step(1)
       when "k", :up    then step(-1)
@@ -172,6 +234,9 @@ module Rakpak
       when "g" then @pending = "g"
       when :space
         toggle_tag
+        move(1)
+      when "x"
+        toggle_exclude
         move(1)
       when "a" then tag_all
       when "d" then untag_all_here
@@ -262,7 +327,10 @@ module Rakpak
     def draw_header(screen)
       screen.fill(0, 0, screen.w, 1, " ", Theme::HEAD)
       screen.put(1, 0, "rakpak", Theme::HEAD + "\e[1;38;5;39m")
-      right = tag_summary
+      right = if @scope then "marking exclusions"
+              elsif @excludes.any? then "#{tag_summary} · #{@excludes.size} excluded"
+              else tag_summary
+              end
       avail = screen.w - 10 - Text.width(right) - 3
       screen.put(9, 0, Text.fit_left(Text.tilde(@cwd), [avail, 1].max), Theme::HEAD + "\e[38;5;231m")
       screen.put(screen.w - Text.width(right) - 1, 0, right,
@@ -341,12 +409,16 @@ module Rakpak
         row = y + i
         sel = (top + i) == cur
         tagged = @tags.include?(e.path)
+        excluded = @excludes.include?(e.path)
         bg = if sel && active then Theme::CUR_BG
              elsif sel then Theme::SEL_BG
              end
         screen.fill(x, row, w, 1, " ", bg) if bg
-        mark_style = tagged ? (bg.to_s + Theme::TAG) : (bg.to_s + Theme::FAINT)
-        screen.put(x, row, tagged ? " ▌" : "  ", mark_style)
+        mark, mark_style = if tagged then [" ▌", Theme::TAG]
+                           elsif excluded then [" ✗", Theme::ERR]
+                           else ["  ", Theme::FAINT]
+                           end
+        screen.put(x, row, mark, bg.to_s + mark_style)
         name_style = bg ? bg + (sel && active ? "\e[1;38;5;231m" : e.style) : e.style
         avail = w - 3
         avail -= 5 unless pane[:kind] == :parent
@@ -465,6 +537,8 @@ module Rakpak
 
     HINTS = [["space", "tag"], ["←→", "nav"], ["a", "all"], ["t", "queue"], ["/", "find"],
              [".", "hidden"], ["p", "pack"], ["u", "unpack"], ["?", "help"]].freeze
+    SCOPE_HINTS = [["space", "exclude"], ["←→", "nav"], ["/", "find"], [".", "hidden"],
+                   ["p", "back to pack"], ["?", "help"]].freeze
 
     def draw_footer(screen, y, status_line)
       screen.fill(0, y, screen.w, 1, " ", nil)
@@ -473,7 +547,7 @@ module Rakpak
         return
       end
       x = 1
-      HINTS.each do |k, label|
+      (@scope ? SCOPE_HINTS : HINTS).each do |k, label|
         break if x + Text.width(k) + Text.width(label) + 3 > screen.w
 
         x = screen.put(x, y, k, Theme::KEY)
