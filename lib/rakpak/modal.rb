@@ -332,7 +332,9 @@ module Rakpak
       when :ctrl_u then @buf.slice!(0, @cur) && (@cur = 0)
       when :ctrl_k then @buf.slice!(@cur..)
       when :ctrl_w
-        left = @buf[0, @cur].sub(/\S*\s*\z/, "")
+        left = @buf[0, @cur].rstrip
+        boundary = left.rindex(/\s/)
+        left = boundary ? left[0..boundary] : ""
         @buf = left + (@buf[@cur..] || "")
         @cur = left.length
       when :space then insert(" ")
