@@ -47,7 +47,13 @@ module Rakpak
     end
 
     def self.parse_excludes(text)
-      text.split(",").map { |n| n.strip.sub(%r{/+\z}, "") }.reject(&:empty?).uniq
+      slash = "/".ord
+      text.split(",").map do |name|
+        name = name.strip
+        finish = name.bytesize
+        finish -= 1 while finish.positive? && name.getbyte(finish - 1) == slash
+        name.byteslice(0, finish)
+      end.reject(&:empty?).uniq
     end
 
     # Marked paths are exact, so glob characters in them must not match.
